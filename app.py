@@ -7,13 +7,15 @@ import requests
 
 # 🔑 API Key 管理：支援本機 .txt 與雲端 secrets.toml
 def get_scopus_key():
-    if "scopus_api_key" in st.secrets:
+    try:
         return st.secrets["scopus_api_key"]
-    else:
-        with open("scopus_key.txt", "r") as f:
-            return f.read().strip()
-
-SCOPUS_API_KEY = get_scopus_key()
+    except Exception:
+        try:
+            with open("scopus_key.txt", "r") as f:
+                return f.read().strip()
+        except FileNotFoundError:
+            st.error("❌ 找不到 Scopus API 金鑰，請確認已在 secrets 設定或提供 scopus_key.txt")
+            st.stop()
 
 # Streamlit 設定
 st.set_page_config(page_title="Reference Checker", layout="centered")
