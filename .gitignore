@@ -193,3 +193,4 @@ cython_debug/
 .cursorignore
 .cursorindexingignore
 scopus_key.txt
+.streamlit/secrets.toml
