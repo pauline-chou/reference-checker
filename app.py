@@ -21,7 +21,12 @@ def get_scopus_key():
 
 SCOPUS_API_KEY = get_scopus_key()
 
-# ========== 相似度計算 ==========
+# ========== 清洗標題 ==========
+def clean_title(text):
+    # 去除標點、空白，並轉為小寫
+    return re.sub(r'\W+', '', text).lower()
+
+# ========== 相似度判斷 ==========
 def is_similar(a, b, threshold=0.9):
     return SequenceMatcher(None, a, b).ratio() >= threshold
 
@@ -33,16 +38,24 @@ def search_crossref_by_title(title):
         "rows": 5,
         "mailto": "pauline687@gmail.com"
     }
+
     response = requests.get(url, params=params)
-    if response.status_code == 200:
-        items = response.json().get("message", {}).get("items", [])
-        for item in items:
-            cr_title = item.get("title", [""])[0]
-            cr_url = item.get("URL")
-            if title.lower() in cr_title.lower():
-                return ("exact", cr_url)
-            elif is_similar(title.lower(), cr_title.lower()):
-                return ("similar", cr_url)
+    if response.status_code != 200:
+        return (None, None)
+
+    items = response.json().get("message", {}).get("items", [])
+    cleaned_input = clean_title(title)
+
+    for item in items:
+        cr_title = item.get("title", [""])[0]
+        cr_url = item.get("URL")
+        cleaned_cr_title = clean_title(cr_title)
+
+        if cleaned_input == cleaned_cr_title:
+            return ("exact", cr_url)
+        elif is_similar(cleaned_input, cleaned_cr_title, threshold=0.9):
+            return ("similar", cr_url)
+
     return (None, None)
 
 # ========== Scopus 查詢 ==========
