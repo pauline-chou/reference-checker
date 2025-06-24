@@ -22,7 +22,7 @@ def get_scopus_key():
 SCOPUS_API_KEY = get_scopus_key()
 
 # ========== 相似度計算 ==========
-def is_similar(a, b, threshold=0.7):
+def is_similar(a, b, threshold=0.9):
     return SequenceMatcher(None, a, b).ratio() >= threshold
 
 # ========== Crossref 查詢 ==========
@@ -122,9 +122,9 @@ if uploaded_file:
         st.markdown("---")
         st.subheader("🧠 查詢結果分類規則")
         rules = [
-            ["🟢 Scopus 首次找到", "Scopus", "標題完全一致（==）", "否"],
-            ["🟡 Crossref 完全包含", "Crossref", "查詢標題包含於 Crossref 標題中（in）", "否"],
-            ["🟠 Crossref 類似標題", "Crossref", "標題相似度 ≥ 0.7（使用 difflib）", "是"],
+            ["🟢 Scopus 首次找到", "Scopus", "標題完全一致", "否"],
+            ["🟡 Crossref 完全包含", "Crossref", "查詢標題包含於 Crossref 標題中", "否"],
+            ["🟠 Crossref 類似標題", "Crossref", "標題相似度 ≥ 0.9", "是"],
             ["🔴 均查無結果", "—", "無任何結果或相似度過低", "—"],
         ]
         df_rules = pd.DataFrame(rules, columns=["分類燈號", "來源", "比對方式", "需人工確認"])
@@ -156,12 +156,12 @@ if uploaded_file:
                     match_type, url = search_crossref_by_title(title)
                     if match_type == "exact":
                         crossref_exact[title] = url
-                        msg_box.markdown("🟡 Crossref 完全包含")
-                        status.update(label=f"🟡 第 {i} 筆成功（Crossref 完全包含）", state="complete")
+                        msg_box.markdown("✅ Crossref 完全包含")
+                        status.update(label=f"🟢 第 {i} 筆成功（Crossref 完全包含）", state="complete")
                     elif match_type == "similar":
                         crossref_similar[title] = url
-                        msg_box.markdown("🟠 Crossref 標題相似（建議人工確認）")
-                        status.update(label=f"🟠 第 {i} 筆相似（需確認）", state="complete")
+                        msg_box.markdown("🟡 Crossref 標題相似（建議人工確認）")
+                        status.update(label=f"🟡 第 {i} 筆相似（需確認）", state="complete")
                     else:
                         not_found.append(title)
                         msg_box.markdown("❌ Crossref 也無結果")
@@ -175,8 +175,8 @@ if uploaded_file:
 
             tab1, tab2, tab3, tab4 = st.tabs([
                 f"🟢 Scopus 首次找到（{len(scopus_results)}）",
-                f"🟡 Crossref 完全包含（{len(crossref_exact)}）",
-                f"🟠 Crossref 類似標題（{len(crossref_similar)}）",
+                f"🟢 Crossref 完全包含（{len(crossref_exact)}）",
+                f"🟡 Crossref 類似標題（{len(crossref_similar)}）",
                 f"🔴 均查無結果（{len(not_found)}）"
             ])
 
