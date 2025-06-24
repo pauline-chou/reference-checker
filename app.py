@@ -4,8 +4,10 @@ import urllib.parse
 from docx import Document
 import tempfile
 import requests
+from difflib import SequenceMatcher
+import pandas as pd
 
-# Scopus API Key 管理
+# ========== API Key 管理 ==========
 def get_scopus_key():
     try:
         return st.secrets["scopus_api_key"]
@@ -14,12 +16,16 @@ def get_scopus_key():
             with open("scopus_key.txt", "r") as f:
                 return f.read().strip()
         except FileNotFoundError:
-            st.error("❌ 找不到 Scopus API 金鑰，請確認已在 secrets 設定或提供 scopus_key.txt")
+            st.error("❌ 找不到 Scopus API 金鑰，請確認已設定 secrets 或提供 scopus_key.txt")
             st.stop()
 
 SCOPUS_API_KEY = get_scopus_key()
 
-# Crossref 查詢
+# ========== 相似度計算 ==========
+def is_similar(a, b, threshold=0.7):
+    return SequenceMatcher(None, a, b).ratio() >= threshold
+
+# ========== Crossref 查詢 ==========
 def search_crossref_by_title(title):
     url = "https://api.crossref.org/works"
     params = {
@@ -32,11 +38,14 @@ def search_crossref_by_title(title):
         items = response.json().get("message", {}).get("items", [])
         for item in items:
             cr_title = item.get("title", [""])[0]
+            cr_url = item.get("URL")
             if title.lower() in cr_title.lower():
-                return item.get("URL")
-    return None
+                return ("exact", cr_url)
+            elif is_similar(title.lower(), cr_title.lower()):
+                return ("similar", cr_url)
+    return (None, None)
 
-# Scopus 查詢
+# ========== Scopus 查詢 ==========
 def search_scopus_by_title(title):
     base_url = "https://api.elsevier.com/content/search/scopus"
     headers = {
@@ -57,7 +66,7 @@ def search_scopus_by_title(title):
                 return entry.get('prism:url', 'https://www.scopus.com')
     return None
 
-# Word 處理
+# ========== Word 處理 ==========
 def extract_paragraphs_from_docx(file):
     doc = Document(file)
     return [para.text.strip() for para in doc.paragraphs if para.text.strip()]
@@ -70,7 +79,7 @@ def extract_reference_section(paragraphs, start_keyword):
             break
     return paragraphs[start_index:] if start_index != -1 else []
 
-# 擷取標題
+# ========== 擷取標題 ==========
 def extract_title(ref_text, style):
     if style == "APA":
         match = re.search(r'\(\d{4}\)\.\s(.+?)(\.|\n|$)', ref_text)
@@ -82,22 +91,16 @@ def extract_title(ref_text, style):
             return match.group(1).strip()
     return None
 
-# 初始化 session state
-for key in ["titles", "pending_titles", "scopus_results", "crossref_results"]:
-    if key not in st.session_state:
-        st.session_state[key] = []
-
-# 介面設定
+# ========== Streamlit UI ==========
 st.set_page_config(page_title="Reference Checker", layout="centered")
 st.title("📚 Reference Checker")
-st.write("上傳 Word 檔 (.docx)，從參考文獻區擷取標題，先查 Scopus，再查 Crossref（針對查不到的部分）")
+st.write("上傳 Word 檔 (.docx)，自動查詢 Scopus → Crossref，分類為四類")
 
-# 上傳與選項
 uploaded_file = st.file_uploader("請上傳 Word 檔案（.docx）", type=["docx"])
 style = st.selectbox("請選擇參考文獻格式", ["APA", "IEEE"])
-start_keyword = st.selectbox("請選擇參考文獻起始標題", ["參考文獻","References", "Reference"])
+start_keyword = st.selectbox("請選擇參考文獻起始標題", ["參考文獻", "References", "Reference"])
 
-# 萃取 Word
+# ========== 上傳並處理 ==========
 if uploaded_file:
     with tempfile.NamedTemporaryFile(delete=False, suffix=".docx") as tmp:
         tmp.write(uploaded_file.read())
@@ -107,51 +110,105 @@ if uploaded_file:
     references = extract_reference_section(paragraphs, start_keyword)
 
     if not references:
-        st.warning("⚠️ 找不到參考文獻段落，請檢查關鍵字是否正確。")
+        st.warning("⚠️ 找不到參考文獻段落，請確認關鍵字是否正確。")
     else:
-        st.session_state.titles = []
+        titles = []
         for ref in references:
             title = extract_title(ref, style)
             if title:
-                st.session_state.titles.append(title)
+                titles.append(title)
 
-# 第一步：Scopus 查詢
-if st.session_state.titles and st.button("🧪 第一步：使用 Scopus 查詢"):
-    st.subheader("🔍 Scopus 查詢結果")
-    st.session_state.scopus_results = {}
-    st.session_state.pending_titles = []
-    for i, title in enumerate(st.session_state.titles):
-        url = search_scopus_by_title(title)
-        if url:
-            st.session_state.scopus_results[title] = url
-            st.markdown(f"**{i+1}. {title}**  \n🔗 [Scopus 查詢結果]({url})", unsafe_allow_html=True)
-        else:
-            st.session_state.pending_titles.append(title)
-            st.error(f"⚠️ 第 {i+1} 筆找不到 Scopus 結果：\n> {title}")
+        # ✅ 規則表格：提前顯示
+        st.markdown("---")
+        st.subheader("🧠 查詢結果分類規則")
+        rules = [
+            ["🟢 Scopus 首次找到", "Scopus", "標題完全一致（==）", "否"],
+            ["🟡 Crossref 完全包含", "Crossref", "查詢標題包含於 Crossref 標題中（in）", "否"],
+            ["🟠 Crossref 類似標題", "Crossref", "標題相似度 ≥ 0.7（使用 difflib）", "是"],
+            ["🔴 均查無結果", "—", "無任何結果或相似度過低", "—"],
+        ]
+        df_rules = pd.DataFrame(rules, columns=["分類燈號", "來源", "比對方式", "需人工確認"])
+        st.dataframe(df_rules, use_container_width=True)
 
-# 第二步：Crossref 補查
-if st.session_state.pending_titles and st.button("🔁 第二步：使用 Crossref 補查"):
-    st.subheader("🔍 Crossref 查詢結果（針對 Scopus 查無結果）")
-    st.session_state.crossref_results = {}
-    for i, title in enumerate(st.session_state.pending_titles):
-        url = search_crossref_by_title(title)
-        if url:
-            st.session_state.crossref_results[title] = url
-            st.markdown(f"**{i+1}. {title}**  \n🔗 [Crossref 查詢結果]({url})", unsafe_allow_html=True)
-        else:
-            st.error(f"❌ Crossref 查無結果：\n> {title}")
+        # ✅ 結果區預留
+        result_tabs_placeholder = st.empty()
 
-# 統整資訊
-if st.session_state.titles:
-    found = len(st.session_state.scopus_results) + len(st.session_state.crossref_results)
-    unresolved = len(st.session_state.titles) - found
-    st.markdown("---")
-    st.subheader("📊 查詢統計結果")
-    st.markdown(f"- ✅ 成功查詢結果：{found} 篇")
-    st.markdown(f"- ❓ 尚未查到資料：{unresolved} 篇")
+        # ✅ 開始查詢
+        st.subheader("📊 正在查詢中，請稍候...")
+        scopus_results = {}
+        crossref_exact = {}
+        crossref_similar = {}
+        not_found = []
 
-    if unresolved > 0:
-        not_found = [t for t in st.session_state.titles if t not in st.session_state.scopus_results and t not in st.session_state.crossref_results]
-        with st.expander("❗ 待查標題清單"):
-            for i, t in enumerate(not_found, 1):
-                st.markdown(f"{i}. {t}")
+        progress_bar = st.progress(0.0)
+
+        for i, title in enumerate(titles, 1):
+            msg_box = st.empty()
+            with st.status(f"🔍 第 {i} 筆：`{title}`", expanded=True) as status:
+                msg_box.markdown("📡 正在查 Scopus...")
+                url = search_scopus_by_title(title)
+                if url:
+                    scopus_results[title] = url
+                    msg_box.markdown("✅ 已找到於 **Scopus**")
+                    status.update(label=f"🟢 第 {i} 筆成功（Scopus）", state="complete")
+                else:
+                    msg_box.markdown("🔁 Scopus 無結果，改查 Crossref...")
+                    match_type, url = search_crossref_by_title(title)
+                    if match_type == "exact":
+                        crossref_exact[title] = url
+                        msg_box.markdown("🟡 Crossref 完全包含")
+                        status.update(label=f"🟡 第 {i} 筆成功（Crossref 完全包含）", state="complete")
+                    elif match_type == "similar":
+                        crossref_similar[title] = url
+                        msg_box.markdown("🟠 Crossref 標題相似（建議人工確認）")
+                        status.update(label=f"🟠 第 {i} 筆相似（需確認）", state="complete")
+                    else:
+                        not_found.append(title)
+                        msg_box.markdown("❌ Crossref 也無結果")
+                        status.update(label=f"🔴 第 {i} 筆未找到", state="error")
+            progress_bar.progress(i / len(titles))
+
+        # ✅ 將結果填入預留區塊
+        with result_tabs_placeholder.container():
+            st.markdown("---")
+            st.subheader("📊 查詢結果分類")
+
+            tab1, tab2, tab3, tab4 = st.tabs([
+                f"🟢 Scopus 首次找到（{len(scopus_results)}）",
+                f"🟡 Crossref 完全包含（{len(crossref_exact)}）",
+                f"🟠 Crossref 類似標題（{len(crossref_similar)}）",
+                f"🔴 均查無結果（{len(not_found)}）"
+            ])
+
+            with tab1:
+                if scopus_results:
+                    for i, (title, url) in enumerate(scopus_results.items(), 1):
+                        with st.expander(f"{i}. {title}"):
+                            st.markdown(f"🔗 [Scopus 連結]({url})", unsafe_allow_html=True)
+                else:
+                    st.info("Scopus 無任何命中結果。")
+
+            with tab2:
+                if crossref_exact:
+                    for i, (title, url) in enumerate(crossref_exact.items(), 1):
+                        with st.expander(f"{i}. {title}"):
+                            st.markdown(f"🔗 [Crossref 連結]({url})", unsafe_allow_html=True)
+                else:
+                    st.info("Crossref 無完全包含結果。")
+
+            with tab3:
+                if crossref_similar:
+                    for i, (title, url) in enumerate(crossref_similar.items(), 1):
+                        with st.expander(f"{i}. {title}"):
+                            st.markdown(f"🔗 [相似論文連結]({url})", unsafe_allow_html=True)
+                            st.warning("⚠️ 此為相似標題，請人工確認是否為正確文獻。")
+                else:
+                    st.info("無標題相似但不一致的結果。")
+
+            with tab4:
+                if not_found:
+                    for i, title in enumerate(not_found, 1):
+                        st.markdown(f"{i}. {title}")
+                    st.markdown("👉 請考慮手動搜尋 Google Scholar。")
+                else:
+                    st.success("所有標題皆成功查詢！")
