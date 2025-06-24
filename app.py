@@ -95,7 +95,7 @@ st.write("上傳 Word 檔 (.docx)，從參考文獻區擷取標題，先查 Scop
 # 上傳與選項
 uploaded_file = st.file_uploader("請上傳 Word 檔案（.docx）", type=["docx"])
 style = st.selectbox("請選擇參考文獻格式", ["APA", "IEEE"])
-start_keyword = st.text_input("請輸入參考文獻起始標題（例如 References 或 參考文獻）", "References")
+start_keyword = st.selectbox("請選擇參考文獻起始標題", ["參考文獻","References", "Reference"])
 
 # 萃取 Word
 if uploaded_file:
