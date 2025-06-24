@@ -3,22 +3,31 @@ import re
 import urllib.parse
 from docx import Document
 import tempfile
+import requests
 
+# 讀取 Scopus API Key
+def read_scopus_key(path="scopus_key.txt"):
+    with open(path, "r") as file:
+        return file.read().strip()
+
+SCOPUS_API_KEY = read_scopus_key()
+
+# Streamlit 設定
 st.set_page_config(page_title="Reference Checker", layout="centered")
-
 st.title("📚 Reference Checker")
-st.write("上傳 Word 檔 (.docx)，系統將從參考文獻區開始擷取引用，產生可點擊的 Google Scholar 查詢連結。")
+st.write("上傳 Word 檔 (.docx)，系統將從參考文獻區開始擷取引用，並嘗試以標題搜尋 Scopus 文獻。")
 
+# 上傳檔案與選項
 uploaded_file = st.file_uploader("請上傳 Word 檔案（.docx）", type=["docx"])
 style = st.selectbox("請選擇參考文獻格式", ["APA", "IEEE"])
 start_keyword = st.text_input("請輸入參考文獻起始標題（例如 References 或 參考文獻）", "References")
 
-# 萃取 Word 中所有段落
+# 擷取 Word 中所有段落
 def extract_paragraphs_from_docx(file):
     doc = Document(file)
     return [para.text.strip() for para in doc.paragraphs if para.text.strip()]
 
-# 從段落中找出參考文獻區段
+# 擷取參考文獻區段
 def extract_reference_section(paragraphs, start_keyword):
     start_index = -1
     for i, p in enumerate(paragraphs):
@@ -29,7 +38,7 @@ def extract_reference_section(paragraphs, start_keyword):
         return []
     return paragraphs[start_index:]
 
-# 根據引用格式擷取標題
+# 根據格式擷取標題
 def extract_title(ref_text, style):
     if style == "APA":
         match = re.search(r'\(\d{4}\)\.\s(.+?)(\.|\n|$)', ref_text)
@@ -41,12 +50,29 @@ def extract_title(ref_text, style):
             return match.group(1).strip()
     return None
 
-# 產生 Google Scholar 查詢連結
-def generate_scholar_link(title):
-    base = "https://scholar.google.com/scholar?q="
-    return base + urllib.parse.quote(title)
+# 使用 Scopus API 查詢標題
+def search_scopus_by_title(title):
+    base_url = "https://api.elsevier.com/content/search/scopus"
+    headers = {
+        "Accept": "application/json",
+        "X-ELS-APIKey": SCOPUS_API_KEY
+    }
+    params = {
+        "query": f'TITLE("{title}")',
+        "count": 5
+    }
 
-# 處理上傳檔案
+    response = requests.get(base_url, headers=headers, params=params)
+    if response.status_code == 200:
+        data = response.json()
+        entries = data.get('search-results', {}).get('entry', [])
+        for entry in entries:
+            doc_title = entry.get('dc:title', '')
+            if doc_title.strip().lower() == title.strip().lower():
+                return entry.get('prism:url', 'https://www.scopus.com')
+    return None
+
+# 主處理流程
 if uploaded_file:
     with tempfile.NamedTemporaryFile(delete=False) as tmp:
         tmp.write(uploaded_file.read())
@@ -62,7 +88,10 @@ if uploaded_file:
         for i, ref in enumerate(references):
             title = extract_title(ref, style)
             if title:
-                link = generate_scholar_link(title)
-                st.markdown(f"**{i+1}. {title}**  \n👉 [Google Scholar 查詢]({link})", unsafe_allow_html=True)
+                scopus_url = search_scopus_by_title(title)
+                if scopus_url:
+                    st.markdown(f"**{i+1}. {title}**  \n🔗 [Scopus 查詢結果]({scopus_url})", unsafe_allow_html=True)
+                else:
+                    st.error(f"⚠️ 第 {i+1} 筆找不到完全吻合的 Scopus 文獻：\n> {title}")
             else:
                 st.error(f"❌ 第 {i+1} 筆無法從中解析標題：\n> {ref}")

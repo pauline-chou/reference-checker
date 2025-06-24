@@ -3,3 +3,4 @@ pandas
 scholarly
 python-docx
 openpyxl
+beautifulsoup4
