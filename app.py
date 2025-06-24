@@ -5,12 +5,15 @@ from docx import Document
 import tempfile
 import requests
 
-# 讀取 Scopus API Key
-def read_scopus_key(path="scopus_key.txt"):
-    with open(path, "r") as file:
-        return file.read().strip()
+# 🔑 API Key 管理：支援本機 .txt 與雲端 secrets.toml
+def get_scopus_key():
+    if "scopus_api_key" in st.secrets:
+        return st.secrets["scopus_api_key"]
+    else:
+        with open("scopus_key.txt", "r") as f:
+            return f.read().strip()
 
-SCOPUS_API_KEY = read_scopus_key()
+SCOPUS_API_KEY = get_scopus_key()
 
 # Streamlit 設定
 st.set_page_config(page_title="Reference Checker", layout="centered")
