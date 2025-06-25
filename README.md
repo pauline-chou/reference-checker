@@ -24,7 +24,7 @@ Reference Checker 是一個簡單實用的工具，可自動從 Word 檔（`.doc
 
 3. API 金鑰設定（需先至 [Elsevier](https://dev.elsevier.com/) 申請 Scopus API Key）：
 4. 在專案根目錄建立文字檔 scopus_key.txt，內容如下：你的_scopus_api_key
-5. 請記得將程式碼中的 "your_email@example.com" 替換為你自己的聯絡信箱，否則 Crossref 可能拒絕查詢請求。
+5. Crossref 查詢需要一組聯絡用 email，請將程式中的 `"your_email@example.com"` 替換為你自己的信箱，以符合 Crossref API 規範。
 
 
 分類邏輯：

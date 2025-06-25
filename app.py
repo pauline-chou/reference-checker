@@ -32,11 +32,12 @@ def is_similar(a, b, threshold=0.9):
 
 # ========== Crossref 查詢 ==========
 def search_crossref_by_title(title):
+    crossref_email = st.secrets.get("crossref_email", "your_email@example.com")  # ← 使用者記得自行修改
     url = "https://api.crossref.org/works"
     params = {
         "query.title": title,
         "rows": 5,
-        "mailto": "pauline687@gmail.com"
+        "mailto": crossref_email
     }
 
     response = requests.get(url, params=params)
