@@ -22,11 +22,29 @@ def get_scopus_key():
             st.stop()
 
 SCOPUS_API_KEY = get_scopus_key()
+# ========== 擷取 DOI ==========
+def extract_doi(text):
+    match = re.search(r'(10\.\d{4,9}/[-._;()/:A-Z0-9]+)', text, re.I)
+    if match:
+        return match.group(1)
+    return None
 
+# ========== Crossref DOI 查詢 ==========
+def search_crossref_by_doi(doi):
+    url = f"https://api.crossref.org/works/{doi}"
+    response = requests.get(url)
+    if response.status_code == 200:
+        item = response.json().get("message", {})
+        return item.get("title", [""])[0], item.get("URL")
+    return None, None
 # ========== 清洗標題 ==========
 def clean_title(text):
-    # 去除標點、空白，並轉為小寫
-    return re.sub(r'\W+', '', text).lower()
+    text = text.lower().strip()
+    text = re.sub(r'[:：]{2,}', ':', text)  # 修復像 : : 問題
+    text = re.sub(r'[“”‘’]', '"', text)
+    text = re.sub(r'[^a-z0-9\s:.,\-]', '', text)
+    text = re.sub(r'\s+', ' ', text)
+    return text
 
 # ========== 相似度判斷 ==========
 def is_similar(a, b, threshold=0.9):
@@ -98,15 +116,14 @@ def extract_reference_section(paragraphs, start_keyword):
 # ========== 擷取標題 ==========
 def extract_title(ref_text, style):
     if style == "APA":
-        match = re.search(r'\(\d{4}\)\.\s(.+?)(\.|\n|$)', ref_text)
+        match = re.search(r'\(\d{4}\)\.\s(.+?)(?:\.\s|$)', ref_text)
         if match:
             return match.group(1).strip()
     elif style == "IEEE":
-        match = re.search(r'"(.+?)"', ref_text)
-        if match:
-            return match.group(1).strip()
+        matches = re.findall(r'"([^"]+)"', ref_text)
+        if matches:
+            return max(matches, key=len).strip()  # 取最長的當作標題
     return None
-
 # ========== Streamlit UI ==========
 st.set_page_config(page_title="Reference Checker", layout="centered")
 if "start_query" not in st.session_state:
@@ -159,6 +176,7 @@ if uploaded_file and start_button:
         
         #開始查詢
         st.subheader("📊 正在查詢中，請稍候...")
+        crossref_doi_hits = {}
         scopus_results = {}
         crossref_exact = {}
         crossref_similar = {}
@@ -167,6 +185,14 @@ if uploaded_file and start_button:
         progress_bar = st.progress(0.0)
 
         for i, (original_ref, title) in enumerate(title_pairs, 1):
+            doi = extract_doi(original_ref)
+            if doi:
+                title_from_doi, url = search_crossref_by_doi(doi)
+                if title_from_doi:
+                    crossref_doi_hits[original_ref] = url
+                    progress_bar.progress(i / len(title_pairs))
+                    continue  # 成功查到 DOI 就略過標題查詢
+
             url = search_scopus_by_title(title)
             if url:
                 scopus_results[original_ref] = url
@@ -178,22 +204,25 @@ if uploaded_file and start_button:
                     crossref_similar[original_ref] = url
                 else:
                     not_found.append(original_ref)
+
             progress_bar.progress(i / len(title_pairs))
 
-        # 儲存查詢結果
         st.session_state.query_results = {
             "title_pairs": title_pairs,
             "scopus_results": scopus_results,
+            "crossref_doi_hits": crossref_doi_hits,
             "crossref_exact": crossref_exact,
             "crossref_similar": crossref_similar,
             "not_found": not_found,
             "uploaded_filename": uploaded_file.name,
             "report_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         }
+
          # 規則表格
         st.markdown("---")
         st.subheader("🧠 查詢結果分類規則")
         rules = [
+            ["🟢 Crossref DOI 命中", "Crossref", "使用參考文獻中的 DOI 直接查詢", "否"],
             ["🟢 Scopus 首次找到", "Scopus", "標題完全一致", "否"],
             ["🟢 Crossref 完全包含", "Crossref", "查詢標題包含於 Crossref 標題中", "否"],
             ["🟡 Crossref 類似標題", "Crossref", "標題相似度 ≥ 0.9", "是"],
@@ -208,7 +237,9 @@ if st.session_state.query_results:
     st.subheader("📊 查詢結果分類")
 
     query_data = st.session_state.query_results
+    not_found = query_data.get("not_found", [])
     title_pairs = query_data["title_pairs"]
+    crossref_doi_hits = query_data["crossref_doi_hits"]
     scopus_results = query_data["scopus_results"]
     crossref_exact = query_data["crossref_exact"]
     crossref_similar = query_data["crossref_similar"]
@@ -216,30 +247,32 @@ if st.session_state.query_results:
     uploaded_filename = query_data["uploaded_filename"]
     report_time = query_data["report_time"]
 
-    tab1, tab2, tab3, tab4 = st.tabs([
-        f"🟢 Scopus 首次找到（{len(scopus_results)}）",
-        f"🟢 Crossref 完全包含（{len(crossref_exact)}）",
+    hit_tab, similar_tab, miss_tab = st.tabs([
+        f"🟢 命中結果（{len(crossref_doi_hits) + len(scopus_results) + len(crossref_exact)}）",
         f"🟡 Crossref 類似標題（{len(crossref_similar)}）",
         f"🔴 均查無結果（{len(not_found)}）"
     ])
 
-    with tab1:
+    with hit_tab:
+        if crossref_doi_hits:
+            with st.expander(f"\U0001F7E2 Crossref DOI 命中（{len(crossref_doi_hits)}）"):
+                for i, (title, url) in enumerate(crossref_doi_hits.items(), 1):
+                    st.markdown(f"{i}. {title}  \n🔗 [DOI 連結]({url})", unsafe_allow_html=True)
+
         if scopus_results:
-            for i, (title, url) in enumerate(scopus_results.items(), 1):
-                with st.expander(f"{i}. {title}"):
-                    st.markdown(f"🔗 [Scopus 連結]({url})", unsafe_allow_html=True)
-        else:
-            st.info("Scopus 無任何命中結果。")
+            with st.expander(f"\U0001F7E2 Scopus 首次找到（{len(scopus_results)}）"):
+                for i, (title, url) in enumerate(scopus_results.items(), 1):
+                    st.markdown(f"{i}. {title}  \n🔗 [Scopus 連結]({url})", unsafe_allow_html=True)
 
-    with tab2:
         if crossref_exact:
-            for i, (title, url) in enumerate(crossref_exact.items(), 1):
-                with st.expander(f"{i}. {title}"):
-                    st.markdown(f"🔗 [Crossref 連結]({url})", unsafe_allow_html=True)
-        else:
-            st.info("Crossref 無完全包含結果。")
+            with st.expander(f"\U0001F7E2 Crossref 完全包含（{len(crossref_exact)}）"):
+                for i, (title, url) in enumerate(crossref_exact.items(), 1):
+                    st.markdown(f"{i}. {title}  \n🔗 [Crossref 連結]({url})", unsafe_allow_html=True)
 
-    with tab3:
+        if not (crossref_doi_hits or scopus_results or crossref_exact):
+            st.info("沒有命中任何參考文獻。")
+
+    with similar_tab:
         if crossref_similar:
             for i, (title, url) in enumerate(crossref_similar.items(), 1):
                 with st.expander(f"{i}. {title}"):
@@ -248,7 +281,7 @@ if st.session_state.query_results:
         else:
             st.info("無標題相似但不一致的結果。")
 
-    with tab4:
+    with miss_tab:
         if not_found:
             for i, title in enumerate(not_found, 1):
                 scholar_url = f"https://scholar.google.com/scholar?q={urllib.parse.quote(title)}"
@@ -263,7 +296,9 @@ if st.session_state.query_results:
 
     export_data = []
     for ref, title in title_pairs:
-        if ref in scopus_results:
+        if ref in crossref_doi_hits:
+            export_data.append([ref, "Crossref DOI 命中", crossref_doi_hits[ref]])
+        elif ref in scopus_results:
             export_data.append([ref, "Scopus 首次找到", scopus_results[ref]])
         elif ref in crossref_exact:
             export_data.append([ref, "Crossref 完全包含", crossref_exact[ref]])
