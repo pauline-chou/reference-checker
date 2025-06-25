@@ -8,6 +8,7 @@ from difflib import SequenceMatcher
 import pandas as pd
 from datetime import datetime
 from io import StringIO
+from serpapi import GoogleSearch
 
 # ========== API Key 管理 ==========
 def get_scopus_key():
@@ -22,15 +23,29 @@ def get_scopus_key():
             st.stop()
 
 SCOPUS_API_KEY = get_scopus_key()
+
+def get_serpapi_key():
+    try:
+        return st.secrets["serpapi_key"]
+    except Exception:
+        try:
+            with open("serpapi_key.txt", "r") as f:
+                return f.read().strip()
+        except FileNotFoundError:
+            st.error("❌ 找不到 SerpAPI 金鑰，請確認已設定 secrets 或提供 serpapi_key.txt")
+            st.stop()
+
+SERPAPI_KEY = get_serpapi_key()
+
 # ========== 擷取 DOI ==========
 def extract_doi(text):
     match = re.search(r'(10\.\d{4,9}/[-._;()/:A-Z0-9]+)', text, re.I)
     if match:
-        return match.group(1).rstrip(".")  # ← 清除句尾句點
+        return match.group(1).rstrip(".")
 
     doi_match = re.search(r'doi:\s*(https?://doi\.org/)?(10\.\d{4,9}/[-._;()/:A-Z0-9]+)', text, re.I)
     if doi_match:
-        return doi_match.group(2).rstrip(".")  # ← 這裡也加上
+        return doi_match.group(2).rstrip(".")
 
     return None
 
@@ -44,7 +59,7 @@ def search_crossref_by_doi(doi):
         if isinstance(titles, list) and len(titles) > 0:
             return titles[0], item.get("URL")
         else:
-            return None, item.get("URL")  # 沒有 title，但有 URL 也返回
+            return None, item.get("URL")
     return None, None
 
 # ========== 清洗標題 ==========
@@ -52,45 +67,10 @@ def clean_title(text):
     text = text.lower().strip()
     text = re.sub(r'[“”‘’]', '"', text)
     text = re.sub(r'[:：]{2,}', ':', text)
-    text = re.sub(r'[^a-z0-9\s:.,\\-]', '', text)  # 保留常見符號
-    text = re.sub(r'\s+', ' ', text)  # 合併空格
-    text = text.rstrip('.,:;- ')  # 刪除尾端多餘標點
+    text = re.sub(r'[^a-z0-9\s:.,\\-]', '', text)
+    text = re.sub(r'\s+', ' ', text)
+    text = text.rstrip('.,:;- ')
     return text
-
-# ========== 相似度判斷 ==========
-def is_similar(a, b, threshold=0.9):
-    return SequenceMatcher(None, a, b).ratio() >= threshold
-
-# ========== Crossref 查詢 ==========
-def search_crossref_by_title(title):
-    crossref_email = st.secrets.get("crossref_email", "your_email@example.com")
-    url = "https://api.crossref.org/works"
-    params = {
-        "query.title": title,
-        "rows": 5,
-        "mailto": crossref_email
-    }
-
-    response = requests.get(url, params=params)
-    if response.status_code != 200:
-        return (None, None)
-
-    items = response.json().get("message", {}).get("items", [])
-    cleaned_input = clean_title(title)
-
-    for item in items:
-        cr_title = item.get("title", [""])[0]
-        cr_url = item.get("URL")
-        cleaned_cr_title = clean_title(cr_title)
-
-        if cleaned_input == cleaned_cr_title:
-            return ("exact", cr_url)
-        elif cleaned_input in cleaned_cr_title:
-            return ("exact", cr_url)  # 新增條件：包含關鍵詞也視為命中
-        elif is_similar(cleaned_input, cleaned_cr_title, threshold=0.9):
-            return ("similar", cr_url)
-
-    return (None, None)
 
 # ========== Scopus 查詢 ==========
 def search_scopus_by_title(title):
@@ -112,6 +92,34 @@ def search_scopus_by_title(title):
             if doc_title.strip().lower() == title.strip().lower():
                 return entry.get('prism:url', 'https://www.scopus.com')
     return None
+
+# ========== serpapi ==========
+def search_scholar_by_title(title, api_key, threshold=0.95):
+    search_url = f"https://scholar.google.com/scholar?q={urllib.parse.quote(title)}"
+
+    # 呼叫 SerpAPI（仍抓結果，但不信任它的結果）
+    params = {
+        "engine": "google_scholar",
+        "q": title,
+        "api_key": api_key,
+        "num": 1
+    }
+    results = GoogleSearch(params).get_dict()
+    organic = results.get("organic_results", [])
+
+    if not organic:
+        return search_url, "no_result"
+
+    first_title = organic[0].get("title", "")
+    cleaned_query = clean_title(title)
+    cleaned_result = clean_title(first_title)
+
+    # 僅當標題「清洗後完全一致」才算 match
+    if cleaned_query == cleaned_result:
+        return search_url, "match"
+
+    # 其他一律視為無效（回搜尋頁，並標記為無結果）
+    return search_url, "no_result"
 
 # ========== Word 處理 ==========
 def extract_paragraphs_from_docx(file):
@@ -135,7 +143,7 @@ def extract_title(ref_text, style):
     elif style == "IEEE":
         matches = re.findall(r'"([^"]+)"', ref_text)
         if matches:
-            return max(matches, key=len).strip().rstrip(",.")  # ← 重點在這裡
+            return max(matches, key=len).strip().rstrip(",.")
         else:
             fallback = re.search(r'(?<!et al)([A-Z][^,.]+[a-zA-Z])[,\.]', ref_text)
             if fallback:
@@ -148,8 +156,16 @@ if "start_query" not in st.session_state:
 if "query_results" not in st.session_state:
     st.session_state.query_results = None
 st.title("📚 Reference Checker")
-st.write("上傳 Word 檔 (.docx)，自動查詢 Scopus → Crossref，分類為四類")
 
+st.markdown("""
+<div style="background-color: #fff9db; padding: 15px; border-left: 6px solid #f1c40f; border-radius: 6px;">
+    <span style="font-size: 16px; font-weight: bold;">⚠️ 注意事項</span><br>
+    <span style="font-size: 15px; color: #444;">
+    為節省核對時間，本系統只查對有 DOI 碼的期刊論文。並未檢查期刊名稱、作者、卷期、頁碼，僅針對篇名進行核對。本系統僅提供初步篩選參考，比對後應進行人工核對，不得直接以本系統核對結果作為學術倫理判斷的依據。
+    </span>
+</div>
+""", unsafe_allow_html=True)
+st.markdown(" ")
 uploaded_file = st.file_uploader("請上傳 Word 檔案（.docx）", type=["docx"])
 style = st.selectbox("請選擇參考文獻格式", ["APA", "IEEE"])
 #start_keyword = st.selectbox("請選擇參考文獻起始標題", ["參考文獻", "References", "Reference"])
@@ -190,12 +206,17 @@ if uploaded_file and start_button:
             title = extract_title(ref, style)
             if title:
                 title_pairs.append((ref, title))
-        
+
+        crossref_doi_hits = {}
+        scopus_hits = {}
+        scholar_hits = {}
+        not_found = []
+
         #開始查詢
         st.subheader("📊 正在查詢中，請稍候...")
         crossref_doi_hits = {}
-        scopus_results = {}
-        crossref_exact = {}
+        scopus_hits = {}
+        scholar_hits = {}
         crossref_similar = {}
         not_found = []
 
@@ -212,13 +233,11 @@ if uploaded_file and start_button:
 
             url = search_scopus_by_title(title)
             if url:
-                scopus_results[original_ref] = url
+                scopus_hits[original_ref] = url
             else:
-                match_type, url = search_crossref_by_title(title)
-                if match_type == "exact":
-                    crossref_exact[original_ref] = url
-                elif match_type == "similar":
-                    crossref_similar[original_ref] = url
+                gs_url, gs_type = search_scholar_by_title(title, SERPAPI_KEY)
+                if gs_type == "match":
+                    scholar_hits[original_ref] = gs_url
                 else:
                     not_found.append(original_ref)
 
@@ -226,151 +245,144 @@ if uploaded_file and start_button:
             
         st.session_state.query_results = {
             "title_pairs": title_pairs,
-            "scopus_results": scopus_results,
             "crossref_doi_hits": crossref_doi_hits,
-            "crossref_exact": crossref_exact,
+            "scopus_hits": scopus_hits,
+            "scholar_hits": scholar_hits,
             "crossref_similar": crossref_similar,
             "not_found": not_found,
             "uploaded_filename": uploaded_file.name,
             "report_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         }
-
          # 規則表格
         st.markdown("---")
         st.subheader("🧠 查詢結果分類規則")
         rules = [
             ["🟢 Crossref DOI 命中", "Crossref", "使用參考文獻中的 DOI 直接查詢", "否"],
-            ["🟢 Scopus 首次找到", "Scopus", "標題完全一致", "否"],
-            ["🟢 Crossref 完全包含", "Crossref", "查詢標題包含於 Crossref 標題中", "否"],
-            ["🟡 Crossref 類似標題", "Crossref", "標題相似度 ≥ 0.9", "是"],
-            ["🔴 均查無結果", "—", "無任何結果或相似度過低", "—"],
+            ["🟢 標題命中", "Scopus / Google Scholar", "標題完全一致", "否"],
+            ["🟡 Google Scholar 類似標題", "Google Scholar", "標題相似或僅部分關鍵字一致", "是"],
+            ["🔴 查無結果", "—", "無任何結果或相似度過低", "—"],
         ]
         df_rules = pd.DataFrame(rules, columns=["分類燈號", "來源", "比對方式", "需人工確認"])
         st.dataframe(df_rules, use_container_width=True)
 
 
 if st.session_state.query_results:
-    st.markdown("---")
-    st.subheader("📊 查詢結果分類")
+        st.markdown("---")
+        st.subheader("📊 查詢結果分類")
 
-    query_data = st.session_state.query_results
-    not_found = query_data.get("not_found", [])
-    title_pairs = query_data["title_pairs"]
-    crossref_doi_hits = query_data["crossref_doi_hits"]
-    scopus_results = query_data["scopus_results"]
-    crossref_exact = query_data["crossref_exact"]
-    crossref_similar = query_data["crossref_similar"]
-    not_found = query_data["not_found"]
-    uploaded_filename = query_data["uploaded_filename"]
-    report_time = query_data["report_time"]
+        query_data = st.session_state.query_results
+        not_found = query_data.get("not_found", [])
+        title_pairs = query_data["title_pairs"]
+        crossref_doi_hits = query_data["crossref_doi_hits"]
+        crossref_similar = query_data["crossref_similar"]
+        uploaded_filename = query_data["uploaded_filename"]
+        report_time = query_data["report_time"]
 
-    hit_tab, similar_tab, miss_tab = st.tabs([
-        f"🟢 命中結果（{len(crossref_doi_hits) + len(scopus_results) + len(crossref_exact)}）",
-        f"🟡 Crossref 類似標題（{len(crossref_similar)}）",
-        f"🔴 均查無結果（{len(not_found)}）"
-    ])
+        scopus_hits = query_data["scopus_hits"]
+        scholar_hits = query_data["scholar_hits"]
 
-    with hit_tab:
-        if crossref_doi_hits:
-            with st.expander(f"\U0001F7E2 Crossref DOI 命中（{len(crossref_doi_hits)}）"):
-                for i, (title, url) in enumerate(crossref_doi_hits.items(), 1):
-                    st.markdown(f"{i}. {title}  \n🔗 [DOI 連結]({url})", unsafe_allow_html=True)
+        matched_count = len(crossref_doi_hits) + len(scopus_hits) + len(scholar_hits)
 
-        if scopus_results:
-            with st.expander(f"\U0001F7E2 Scopus 首次找到（{len(scopus_results)}）"):
-                for i, (title, url) in enumerate(scopus_results.items(), 1):
-                    st.markdown(f"{i}. {title}  \n🔗 [Scopus 連結]({url})", unsafe_allow_html=True)
+        hit_tab, similar_tab, miss_tab = st.tabs([
+            f"🟢 命中結果（{matched_count}）",
+            f"🟡 Google Scholar 類似標題（{len(crossref_similar)}）",
+            f"🔴 均查無結果（{len(not_found)}）"
+        ])
 
-        if crossref_exact:
-            with st.expander(f"\U0001F7E2 Crossref 完全包含（{len(crossref_exact)}）"):
-                for i, (title, url) in enumerate(crossref_exact.items(), 1):
-                    st.markdown(f"{i}. {title}  \n🔗 [Crossref 連結]({url})", unsafe_allow_html=True)
+        with hit_tab:
+            if crossref_doi_hits:
+                with st.expander(f"\U0001F7E2 Crossref DOI 命中（{len(crossref_doi_hits)}）"):
+                    for i, (title, url) in enumerate(crossref_doi_hits.items(), 1):
+                        st.markdown(f"{i}. {title}  \n🔗 [DOI 連結]({url})", unsafe_allow_html=True)
 
-        if not (crossref_doi_hits or scopus_results or crossref_exact):
-            st.info("沒有命中任何參考文獻。")
+            if scopus_hits:
+                with st.expander(f"\U0001F7E2 Scopus 標題命中（{len(scopus_hits)}）"):
+                    for i, (title, url) in enumerate(scopus_hits.items(), 1):
+                        st.markdown(f"{i}. {title}  \n🔗 [Scopus 連結]({url})", unsafe_allow_html=True)
 
-    with similar_tab:
-        if crossref_similar:
-            for i, (title, url) in enumerate(crossref_similar.items(), 1):
-                with st.expander(f"{i}. {title}"):
-                    st.markdown(f"🔗 [相似論文連結]({url})", unsafe_allow_html=True)
-                    st.warning("⚠️ 此為相似標題，請人工確認是否為正確文獻。")
-        else:
-            st.info("無標題相似但不一致的結果。")
+            if scholar_hits:
+                with st.expander(f"\U0001F7E2 Google Scholar 標題命中（{len(scholar_hits)}）"):
+                    for i, (title, url) in enumerate(scholar_hits.items(), 1):
+                        st.markdown(f"{i}. {title}  \n🔗 [Scholar 連結]({url})", unsafe_allow_html=True)
 
-    with miss_tab:
-        if not_found:
-            for i, title in enumerate(not_found, 1):
-                scholar_url = f"https://scholar.google.com/scholar?q={urllib.parse.quote(title)}"
-                st.markdown(f"{i}. {title}  \n🔗 [Google Scholar 搜尋]({scholar_url})", unsafe_allow_html=True)
-            st.markdown("👉 請考慮手動搜尋 Google Scholar。")
-        else:
-            st.success("所有標題皆成功查詢！")
+            if not (crossref_doi_hits or scopus_hits or scholar_hits):
+                st.info("沒有命中任何參考文獻。")
 
-    # 下載結果
-    st.markdown("---")
+        with similar_tab:
+            if crossref_similar:
+                for i, (title, url) in enumerate(crossref_similar.items(), 1):
+                    with st.expander(f"{i}. {title}（Google Scholar）"):
+                        st.markdown(f"🔗 [Google Scholar 結果連結]({url})", unsafe_allow_html=True)
+                        st.warning("⚠️ 此為相似標題，請人工確認是否為正確文獻。")
+            else:
+                st.info("無標題相似但不一致的結果。")
 
-    export_data = []
-    for ref, title in title_pairs:
-        if ref in crossref_doi_hits:
-            export_data.append([ref, "Crossref 有 DOI 資訊", crossref_doi_hits[ref]])
-        elif ref in scopus_results:
-            export_data.append([ref, "正常文獻，收錄於 Scopus", scopus_results[ref]])
-        elif ref in crossref_exact:
-            export_data.append([ref, "正常文獻，Crossref 有找到 DOI 碼", crossref_exact[ref]])
-        elif ref in crossref_similar:
-            export_data.append([ref, "Crossref 找到類似標題文章", crossref_similar[ref]])
-        elif ref in not_found:
-            scholar_url = f"https://scholar.google.com/scholar?q={urllib.parse.quote(ref)}"
-            export_data.append([ref, "查無結果", scholar_url])
+        with miss_tab:
+            if not_found:
+                for i, title in enumerate(not_found, 1):
+                    scholar_url = f"https://scholar.google.com/scholar?q={urllib.parse.quote(title)}"
+                    st.markdown(f"{i}. {title}  \n🔗 [Google Scholar 搜尋]({scholar_url})", unsafe_allow_html=True)
+                st.markdown("👉 請考慮手動搜尋 Google Scholar。")
+            else:
+                st.success("所有標題皆成功查詢！")
 
-    total_refs = len(title_pairs)
-    matched_exact = len(crossref_doi_hits) + len(scopus_results) + len(crossref_exact)
-    matched_similar = len(crossref_similar)
-    unmatched = len(not_found)
+        # 下載結果
+        st.markdown("---")
+        export_data = []
+        for ref, title in title_pairs:
+            if ref in crossref_doi_hits:
+                export_data.append([ref, "Crossref 有 DOI 資訊", crossref_doi_hits[ref]])
+            elif ref in scopus_hits:
+                export_data.append([ref, "標題命中（Scopus）", scopus_hits[ref]])
+            elif ref in scholar_hits:
+                export_data.append([ref, "標題命中（Google Scholar）", scholar_hits[ref]])
+            elif ref in crossref_similar:
+                export_data.append([ref, "Google Scholar 類似標題", crossref_similar[ref]])
+            elif ref in not_found:
+                scholar_url = f"https://scholar.google.com/scholar?q={urllib.parse.quote(ref)}"
+                export_data.append([ref, "查無結果", scholar_url])
 
-    header = StringIO()
-    header.write(f"檔案名稱：{uploaded_filename}\n")
-    header.write(f"報告產出時間：{report_time}\n\n")
-    header.write("初步篩選核對結果：\n")
-    header.write(f"本篇論文共有 {total_refs} 篇參考文獻，其中有 {matched_exact} 篇有找到相同篇名，有 {matched_similar} 篇找到類似篇名，{unmatched} 篇未找到對應的期刊論文，可能是專書、研討會論文、產業報告或其他論文，需要人工進行後續核對。\n\n")
-    header.write("說明：\n")
-    header.write("為節省核對時間，本系統只查對有DOI碼的期刊論文。且並未檢查期刊名稱、作者、卷期、頁碼。只針對篇名進行核對。\n")
-    header.write("本系統只是為了提供初步篩選，比對後應接著進行人工核對，任何人都不應該以本系統核對結果作為任何學術倫理判斷之基礎。\n\n")
+        total_refs = len(title_pairs)
+        matched_exact = len(crossref_doi_hits) + len(scopus_hits) + len(scholar_hits)
+        matched_similar = len(crossref_similar)
+        unmatched = len(not_found)
 
-    csv_buffer = StringIO()
-    csv_buffer.write(header.getvalue())
-    df_export = pd.DataFrame(export_data, columns=["原始參考文獻", "查核結果", "連結"])
-    df_export.to_csv(csv_buffer, index=False)
+        header = StringIO()
+        header.write(f"檔案名稱：{uploaded_filename}\n")
+        header.write(f"報告產出時間：{report_time}\n\n")
+        header.write("初步篩選核對結果：\n")
+        header.write(f"本篇論文共有 {total_refs} 篇參考文獻，其中有 {matched_exact} 篇有找到相同篇名，有 {matched_similar} 篇找到類似篇名，{unmatched} 篇未找到對應的期刊論文，可能是專書、研討會論文、產業報告或其他論文，需要人工進行後續核對。\n\n")
+        header.write("說明：\n")
+        header.write("為節省核對時間，本系統只查對有DOI碼的期刊論文。且並未檢查期刊名稱、作者、卷期、頁碼。只針對篇名進行核對。\n")
+        header.write("本系統只是為了提供初步篩選，比對後應接著進行人工核對，任何人都不應該以本系統核對結果作為任何學術倫理判斷之基礎。\n\n")
 
-    st.markdown(f"""
-    📌 查核結果說明：本篇論文共有 {total_refs} 篇參考文獻，其中：
+        csv_buffer = StringIO()
+        csv_buffer.write(header.getvalue())
+        df_export = pd.DataFrame(export_data, columns=["原始參考文獻", "查核結果", "連結"])
+        df_export.to_csv(csv_buffer, index=False)
 
-    - {len(crossref_doi_hits)} 篇為「Crossref 有 DOI 資訊」
-    - {len(scopus_results)} 篇為「正常文獻，收錄於 Scopus」
-    - {len(crossref_exact)} 篇為「正常文獻，Crossref 有找到 DOI 碼」
-    - {len(crossref_similar)} 篇為「Crossref 找到類似標題文章」
-    - {len(not_found)} 篇為「查無結果」
-    """)
-    st.markdown("---")
-    # 警語說明文字
-    st.markdown("### ⚠️ 注意事項")
-    st.markdown("""
-    為節省核對時間，本系統只查對有 DOI 碼的期刊論文。並未檢查期刊名稱、作者、卷期、頁碼，**僅針對篇名進行核對**。
+        st.markdown(f"""
+        📌 查核結果說明：本篇論文共有 {total_refs} 篇參考文獻，其中：
 
-    本系統僅提供**初步篩選參考**，比對後應進行人工核對，**不得直接以本系統核對結果作為學術倫理判斷的依據**。
-    """)
-    st.subheader("📥 下載查詢結果")
-    col1, col2 = st.columns([1, 1])
-    with col1:
-        st.download_button(
-            label="📤 下載結果 CSV 檔",
-            data=csv_buffer.getvalue().encode('utf-8-sig'),
-            file_name="reference_results.csv",
-            mime="text/csv"
-        )
-    with col2:
-        if st.button("🔁 重新上傳其他檔案"):
-            for key in list(st.session_state.keys()):
-                del st.session_state[key]
-            st.rerun()
+        - {len(crossref_doi_hits)} 篇為「Crossref 有 DOI 資訊」
+        - {len(scopus_hits)} 篇為「標題命中（Scopus）」
+        - {len(scholar_hits)} 篇為「標題命中（Google Scholar）」
+        - {len(crossref_similar)} 篇為「Google Scholar 類似標題」
+        - {len(not_found)} 篇為「查無結果」
+        """)
+        st.markdown("---")
+        
+        st.subheader("📥 下載查詢結果")
+        col1, col2 = st.columns([1, 1])
+        with col1:
+            st.download_button(
+                label="📤 下載結果 CSV 檔",
+                data=csv_buffer.getvalue().encode('utf-8-sig'),
+                file_name="reference_results.csv",
+                mime="text/csv"
+            )
+        with col2:
+            if st.button("🔁 重新上傳其他檔案"):
+                for key in list(st.session_state.keys()):
+                    del st.session_state[key]
+                st.rerun()
