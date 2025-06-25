@@ -35,15 +35,20 @@ def search_crossref_by_doi(doi):
     response = requests.get(url)
     if response.status_code == 200:
         item = response.json().get("message", {})
-        return item.get("title", [""])[0], item.get("URL")
+        titles = item.get("title")
+        if isinstance(titles, list) and len(titles) > 0:
+            return titles[0], item.get("URL")
+        else:
+            return None, item.get("URL")  # 沒有 title，但有 URL 也返回
     return None, None
+
 # ========== 清洗標題 ==========
 def clean_title(text):
     text = text.lower().strip()
-    text = re.sub(r'[:：]{2,}', ':', text)  # 修復像 : : 問題
     text = re.sub(r'[“”‘’]', '"', text)
-    text = re.sub(r'[^a-z0-9\s:.,\-]', '', text)
-    text = re.sub(r'\s+', ' ', text)
+    text = re.sub(r'[:：]{2,}', ':', text)
+    text = re.sub(r'[^a-z0-9\s:.,\\-]', '', text)  # 保留常見符號
+    text = re.sub(r'\s+', ' ', text)  # 合併空格
     return text
 
 # ========== 相似度判斷 ==========
