@@ -26,7 +26,12 @@ SCOPUS_API_KEY = get_scopus_key()
 def extract_doi(text):
     match = re.search(r'(10\.\d{4,9}/[-._;()/:A-Z0-9]+)', text, re.I)
     if match:
-        return match.group(1)
+        return match.group(1).rstrip(".")  # ← 清除句尾句點
+
+    doi_match = re.search(r'doi:\s*(https?://doi\.org/)?(10\.\d{4,9}/[-._;()/:A-Z0-9]+)', text, re.I)
+    if doi_match:
+        return doi_match.group(2).rstrip(".")  # ← 這裡也加上
+
     return None
 
 # ========== Crossref DOI 查詢 ==========
@@ -49,6 +54,7 @@ def clean_title(text):
     text = re.sub(r'[:：]{2,}', ':', text)
     text = re.sub(r'[^a-z0-9\s:.,\\-]', '', text)  # 保留常見符號
     text = re.sub(r'\s+', ' ', text)  # 合併空格
+    text = text.rstrip('.,:;- ')  # 刪除尾端多餘標點
     return text
 
 # ========== 相似度判斷 ==========
@@ -57,7 +63,7 @@ def is_similar(a, b, threshold=0.9):
 
 # ========== Crossref 查詢 ==========
 def search_crossref_by_title(title):
-    crossref_email = st.secrets.get("crossref_email", "your_email@example.com")  # ← 使用者記得自行修改
+    crossref_email = st.secrets.get("crossref_email", "your_email@example.com")
     url = "https://api.crossref.org/works"
     params = {
         "query.title": title,
@@ -79,6 +85,8 @@ def search_crossref_by_title(title):
 
         if cleaned_input == cleaned_cr_title:
             return ("exact", cr_url)
+        elif cleaned_input in cleaned_cr_title:
+            return ("exact", cr_url)  # 新增條件：包含關鍵詞也視為命中
         elif is_similar(cleaned_input, cleaned_cr_title, threshold=0.9):
             return ("similar", cr_url)
 
@@ -127,7 +135,11 @@ def extract_title(ref_text, style):
     elif style == "IEEE":
         matches = re.findall(r'"([^"]+)"', ref_text)
         if matches:
-            return max(matches, key=len).strip()  # 取最長的當作標題
+            return max(matches, key=len).strip().rstrip(",.")  # ← 重點在這裡
+        else:
+            fallback = re.search(r'(?<!et al)([A-Z][^,.]+[a-zA-Z])[,\.]', ref_text)
+            if fallback:
+                return fallback.group(1).strip(" ,.")
     return None
 # ========== Streamlit UI ==========
 st.set_page_config(page_title="Reference Checker", layout="centered")
@@ -211,7 +223,7 @@ if uploaded_file and start_button:
                     not_found.append(original_ref)
 
             progress_bar.progress(i / len(title_pairs))
-
+            
         st.session_state.query_results = {
             "title_pairs": title_pairs,
             "scopus_results": scopus_results,
