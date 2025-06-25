@@ -297,24 +297,23 @@ if st.session_state.query_results:
 
     # 下載結果
     st.markdown("---")
-    st.subheader("📥 下載查詢結果")
 
     export_data = []
     for ref, title in title_pairs:
         if ref in crossref_doi_hits:
-            export_data.append([ref, "Crossref DOI 命中", crossref_doi_hits[ref]])
+            export_data.append([ref, "Crossref 有 DOI 資訊", crossref_doi_hits[ref]])
         elif ref in scopus_results:
-            export_data.append([ref, "Scopus 首次找到", scopus_results[ref]])
+            export_data.append([ref, "正常文獻，收錄於 Scopus", scopus_results[ref]])
         elif ref in crossref_exact:
-            export_data.append([ref, "Crossref 完全包含", crossref_exact[ref]])
+            export_data.append([ref, "正常文獻，Crossref 有找到 DOI 碼", crossref_exact[ref]])
         elif ref in crossref_similar:
-            export_data.append([ref, "Crossref 類似標題", crossref_similar[ref]])
+            export_data.append([ref, "Crossref 找到類似標題文章", crossref_similar[ref]])
         elif ref in not_found:
             scholar_url = f"https://scholar.google.com/scholar?q={urllib.parse.quote(ref)}"
             export_data.append([ref, "查無結果", scholar_url])
 
     total_refs = len(title_pairs)
-    matched_exact = len(scopus_results) + len(crossref_exact)
+    matched_exact = len(crossref_doi_hits) + len(scopus_results) + len(crossref_exact)
     matched_similar = len(crossref_similar)
     unmatched = len(not_found)
 
@@ -329,9 +328,27 @@ if st.session_state.query_results:
 
     csv_buffer = StringIO()
     csv_buffer.write(header.getvalue())
-    df_export = pd.DataFrame(export_data, columns=["原始參考文獻", "分類", "連結"])
+    df_export = pd.DataFrame(export_data, columns=["原始參考文獻", "查核結果", "連結"])
     df_export.to_csv(csv_buffer, index=False)
 
+    st.markdown(f"""
+    📌 查核結果說明：本篇論文共有 {total_refs} 篇參考文獻，其中：
+
+    - {len(crossref_doi_hits)} 篇為「Crossref 有 DOI 資訊」
+    - {len(scopus_results)} 篇為「正常文獻，收錄於 Scopus」
+    - {len(crossref_exact)} 篇為「正常文獻，Crossref 有找到 DOI 碼」
+    - {len(crossref_similar)} 篇為「Crossref 找到類似標題文章」
+    - {len(not_found)} 篇為「查無結果」
+    """)
+    st.markdown("---")
+    # 警語說明文字
+    st.markdown("### ⚠️ 注意事項")
+    st.markdown("""
+    為節省核對時間，本系統只查對有 DOI 碼的期刊論文。並未檢查期刊名稱、作者、卷期、頁碼，**僅針對篇名進行核對**。
+
+    本系統僅提供**初步篩選參考**，比對後應進行人工核對，**不得直接以本系統核對結果作為學術倫理判斷的依據**。
+    """)
+    st.subheader("📥 下載查詢結果")
     col1, col2 = st.columns([1, 1])
     with col1:
         st.download_button(
