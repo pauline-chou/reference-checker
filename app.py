@@ -114,7 +114,7 @@ st.write("上傳 Word 檔 (.docx)，自動查詢 Scopus → Crossref，分類為
 
 uploaded_file = st.file_uploader("請上傳 Word 檔案（.docx）", type=["docx"])
 style = st.selectbox("請選擇參考文獻格式", ["APA", "IEEE"])
-start_keyword = st.selectbox("請選擇參考文獻起始標題", ["參考文獻", "References", "Reference"])
+#start_keyword = st.selectbox("請選擇參考文獻起始標題", ["參考文獻", "References", "Reference"])
 
 # ========== 上傳並處理 ==========
 if uploaded_file:
@@ -122,41 +122,65 @@ if uploaded_file:
         tmp.write(uploaded_file.read())
         tmp_path = tmp.name
 
-    paragraphs = extract_paragraphs_from_docx(tmp_path)
-    references = extract_reference_section(paragraphs, start_keyword)
+        # ✅ 先解析整份 Word 段落
+        paragraphs = extract_paragraphs_from_docx(tmp_path)
 
-    if not references:
-        st.warning("⚠️ 找不到參考文獻段落，請確認關鍵字是否正確。")
-    else:
-        title_pairs = []
-        for ref in references:
-            title = extract_title(ref, style)
-            if title:
-                title_pairs.append((ref, title))  # 原始字串與標題配對
+        # ✅ 嘗試使用預設關鍵字擷取參考文獻段落
+        auto_keywords = ["參考文獻", "References", "Reference"]
+        matched_section = []
+        matched_keyword = None
 
-        # ✅ 規則表格：提前顯示
-        st.markdown("---")
-        st.subheader("🧠 查詢結果分類規則")
-        rules = [
-            ["🟢 Scopus 首次找到", "Scopus", "標題完全一致", "否"],
-            ["🟢 Crossref 完全包含", "Crossref", "查詢標題包含於 Crossref 標題中", "否"],
-            ["🟡 Crossref 類似標題", "Crossref", "標題相似度 ≥ 0.9", "是"],
-            ["🔴 均查無結果", "—", "無任何結果或相似度過低", "—"],
-        ]
-        df_rules = pd.DataFrame(rules, columns=["分類燈號", "來源", "比對方式", "需人工確認"])
-        st.dataframe(df_rules, use_container_width=True)
+        for kw in auto_keywords:
+            matched_section = extract_reference_section(paragraphs, kw)
+            if matched_section:
+                matched_keyword = kw
+                break
 
-        # ✅ 結果區預留
-        result_tabs_placeholder = st.empty()
+        # ✅ 若找不到 → 顯示手動輸入欄位
+        if not matched_section:
+            st.warning("⚠️ 無法自動偵測參考文獻標題，請手動輸入：")
+            manual_kw = st.text_input("請輸入 Word 中參考文獻標題（例如 參考文獻 / Reference / Works Cited）")
+            if manual_kw:
+                matched_section = extract_reference_section(paragraphs, manual_kw)
+                if not matched_section:
+                    st.error("❌ 仍然無法找到參考文獻段落，請確認輸入內容或檔案格式。")
+                else:
+                    matched_keyword = manual_kw
 
-        # ✅ 開始查詢
-        st.subheader("📊 正在查詢中，請稍候...")
-        scopus_results = {}
-        crossref_exact = {}
-        crossref_similar = {}
-        not_found = []
+        references = matched_section
 
-        progress_bar = st.progress(0.0)
+        if not references:
+            st.warning("⚠️ 找不到參考文獻段落，請確認檔案格式與標題。")
+        else:
+            title_pairs = []
+            for ref in references:
+                title = extract_title(ref, style)
+                if title:
+                    title_pairs.append((ref, title))  # 原始字串與標題配對
+
+            # ✅ 規則表格：提前顯示
+            st.markdown("---")
+            st.subheader("🧠 查詢結果分類規則")
+            rules = [
+                ["🟢 Scopus 首次找到", "Scopus", "標題完全一致", "否"],
+                ["🟢 Crossref 完全包含", "Crossref", "查詢標題包含於 Crossref 標題中", "否"],
+                ["🟡 Crossref 類似標題", "Crossref", "標題相似度 ≥ 0.9", "是"],
+                ["🔴 均查無結果", "—", "無任何結果或相似度過低", "—"],
+            ]
+            df_rules = pd.DataFrame(rules, columns=["分類燈號", "來源", "比對方式", "需人工確認"])
+            st.dataframe(df_rules, use_container_width=True)
+
+            # ✅ 結果區預留
+            result_tabs_placeholder = st.empty()
+
+            # ✅ 開始查詢
+            st.subheader("📊 正在查詢中，請稍候...")
+            scopus_results = {}
+            crossref_exact = {}
+            crossref_similar = {}
+            not_found = []
+
+            progress_bar = st.progress(0.0)
 
         for i, (original_ref, title) in enumerate(title_pairs, 1):
             msg_box = st.empty()
@@ -234,15 +258,16 @@ if uploaded_file:
             st.subheader("📥 下載查詢結果")
 
             export_data = []
-            for ref, url in scopus_results.items():
-                export_data.append([ref, "Scopus 首次找到", url])
-            for ref, url in crossref_exact.items():
-                export_data.append([ref, "Crossref 完全包含", url])
-            for ref, url in crossref_similar.items():
-                export_data.append([ref, "Crossref 類似標題", url])
-            for ref in not_found:
-                scholar_url = f"https://scholar.google.com/scholar?q={urllib.parse.quote(ref)}"
-                export_data.append([ref, "查無結果", scholar_url])
+            for ref, title in title_pairs:
+                if ref in scopus_results:
+                    export_data.append([ref, "Scopus 首次找到", scopus_results[ref]])
+                elif ref in crossref_exact:
+                    export_data.append([ref, "Crossref 完全包含", crossref_exact[ref]])
+                elif ref in crossref_similar:
+                    export_data.append([ref, "Crossref 類似標題", crossref_similar[ref]])
+                elif ref in not_found:
+                    scholar_url = f"https://scholar.google.com/scholar?q={urllib.parse.quote(ref)}"
+                    export_data.append([ref, "查無結果", scholar_url])
 
             # 統計數據
             total_refs = len(title_pairs)
@@ -254,17 +279,6 @@ if uploaded_file:
             uploaded_filename = uploaded_file.name
             report_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-            # 準備資料行
-            export_data = []
-            for ref, url in scopus_results.items():
-                export_data.append([ref, "Scopus 首次找到", url])
-            for ref, url in crossref_exact.items():
-                export_data.append([ref, "Crossref 完全包含", url])
-            for ref, url in crossref_similar.items():
-                export_data.append([ref, "Crossref 類似標題", url])
-            for ref in not_found:
-                scholar_url = f"https://scholar.google.com/scholar?q={urllib.parse.quote(ref)}"
-                export_data.append([ref, "查無結果", scholar_url])
 
             # 建立主 DataFrame
             df_export = pd.DataFrame(export_data, columns=["原始參考文獻", "分類", "連結"])
