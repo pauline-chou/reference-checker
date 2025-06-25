@@ -6,6 +6,8 @@ import tempfile
 import requests
 from difflib import SequenceMatcher
 import pandas as pd
+from datetime import datetime
+from io import StringIO
 
 # ========== API Key 管理 ==========
 def get_scopus_key():
@@ -126,11 +128,11 @@ if uploaded_file:
     if not references:
         st.warning("⚠️ 找不到參考文獻段落，請確認關鍵字是否正確。")
     else:
-        titles = []
+        title_pairs = []
         for ref in references:
             title = extract_title(ref, style)
             if title:
-                titles.append(title)
+                title_pairs.append((ref, title))  # 原始字串與標題配對
 
         # ✅ 規則表格：提前顯示
         st.markdown("---")
@@ -156,31 +158,31 @@ if uploaded_file:
 
         progress_bar = st.progress(0.0)
 
-        for i, title in enumerate(titles, 1):
+        for i, (original_ref, title) in enumerate(title_pairs, 1):
             msg_box = st.empty()
             with st.status(f"🔍 第 {i} 筆：`{title}`", expanded=True) as status:
                 msg_box.markdown("📡 正在查 Scopus...")
                 url = search_scopus_by_title(title)
                 if url:
-                    scopus_results[title] = url
+                    scopus_results[original_ref] = url
                     msg_box.markdown("✅ 已找到於 **Scopus**")
                     status.update(label=f"🟢 第 {i} 筆成功（Scopus）", state="complete")
                 else:
                     msg_box.markdown("🔁 Scopus 無結果，改查 Crossref...")
                     match_type, url = search_crossref_by_title(title)
                     if match_type == "exact":
-                        crossref_exact[title] = url
+                        crossref_exact[original_ref] = url
                         msg_box.markdown("✅ Crossref 完全包含")
                         status.update(label=f"🟢 第 {i} 筆成功（Crossref 完全包含）", state="complete")
                     elif match_type == "similar":
-                        crossref_similar[title] = url
+                        crossref_similar[original_ref] = url
                         msg_box.markdown("🟡 Crossref 標題相似（建議人工確認）")
                         status.update(label=f"🟡 第 {i} 筆相似（需確認）", state="complete")
                     else:
-                        not_found.append(title)
+                        not_found.append(original_ref)
                         msg_box.markdown("❌ Crossref 也無結果")
                         status.update(label=f"🔴 第 {i} 筆未找到", state="error")
-            progress_bar.progress(i / len(titles))
+            progress_bar.progress(i / len(title_pairs))
 
         # ✅ 將結果填入預留區塊
         with result_tabs_placeholder.container():
@@ -227,3 +229,65 @@ if uploaded_file:
                     st.markdown("👉 請考慮手動搜尋 Google Scholar。")
                 else:
                     st.success("所有標題皆成功查詢！")
+         # ✅ 匯出 CSV 檔案
+            st.markdown("---")
+            st.subheader("📥 下載查詢結果")
+
+            export_data = []
+            for ref, url in scopus_results.items():
+                export_data.append([ref, "Scopus 首次找到", url])
+            for ref, url in crossref_exact.items():
+                export_data.append([ref, "Crossref 完全包含", url])
+            for ref, url in crossref_similar.items():
+                export_data.append([ref, "Crossref 類似標題", url])
+            for ref in not_found:
+                scholar_url = f"https://scholar.google.com/scholar?q={urllib.parse.quote(ref)}"
+                export_data.append([ref, "查無結果", scholar_url])
+
+            # 統計數據
+            total_refs = len(title_pairs)
+            matched_exact = len(scopus_results) + len(crossref_exact)
+            matched_similar = len(crossref_similar)
+            unmatched = len(not_found)
+
+            # 檔名與時間
+            uploaded_filename = uploaded_file.name
+            report_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+            # 準備資料行
+            export_data = []
+            for ref, url in scopus_results.items():
+                export_data.append([ref, "Scopus 首次找到", url])
+            for ref, url in crossref_exact.items():
+                export_data.append([ref, "Crossref 完全包含", url])
+            for ref, url in crossref_similar.items():
+                export_data.append([ref, "Crossref 類似標題", url])
+            for ref in not_found:
+                scholar_url = f"https://scholar.google.com/scholar?q={urllib.parse.quote(ref)}"
+                export_data.append([ref, "查無結果", scholar_url])
+
+            # 建立主 DataFrame
+            df_export = pd.DataFrame(export_data, columns=["原始參考文獻", "分類", "連結"])
+
+            # 將說明與統計插入為前段文字（用 StringIO 串接）
+            header = StringIO()
+            header.write(f"檔案名稱：{uploaded_filename}\n")
+            header.write(f"報告產出時間：{report_time}\n\n")
+            header.write("初步篩選核對結果：\n")
+            header.write(f"本篇論文共有 {total_refs} 篇參考文獻，其中有 {matched_exact} 篇有找到相同篇名，有 {matched_similar} 篇找到類似篇名，{unmatched} 篇未找到對應的期刊論文，可能是專書、研討會論文、產業報告或其他論文，需要人工進行後續核對。\n\n")
+            header.write("說明：\n")
+            header.write("為節省核對時間，本系統只查對有DOI碼的期刊論文。且並未檢查期刊名稱、作者、卷期、頁碼。只針對篇名進行核對。\n")
+            header.write("本系統只是為了提供初步篩選，比對後應接著進行人工核對，任何人都不應該以本系統核對結果作為任何學術倫理判斷之基礎。\n\n")
+
+            # 寫入主資料
+            csv_buffer = StringIO()
+            header_content = header.getvalue()
+            csv_buffer.write(header_content)
+            df_export.to_csv(csv_buffer, index=False)
+
+            st.download_button(
+                label="📤 下載結果 CSV 檔",
+                data=csv_buffer.getvalue().encode('utf-8-sig'),
+                file_name="reference_results.csv",
+                mime="text/csv"
+            )
