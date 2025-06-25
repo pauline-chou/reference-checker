@@ -222,7 +222,8 @@ if uploaded_file:
             with tab4:
                 if not_found:
                     for i, title in enumerate(not_found, 1):
-                        st.markdown(f"{i}. {title}")
+                        scholar_url = f"https://scholar.google.com/scholar?q={urllib.parse.quote(title)}"
+                        st.markdown(f"{i}. {title}  \n🔗 [Google Scholar 搜尋]({scholar_url})", unsafe_allow_html=True)
                     st.markdown("👉 請考慮手動搜尋 Google Scholar。")
                 else:
                     st.success("所有標題皆成功查詢！")
