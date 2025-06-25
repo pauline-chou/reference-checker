@@ -115,9 +115,9 @@ st.write("上傳 Word 檔 (.docx)，自動查詢 Scopus → Crossref，分類為
 uploaded_file = st.file_uploader("請上傳 Word 檔案（.docx）", type=["docx"])
 style = st.selectbox("請選擇參考文獻格式", ["APA", "IEEE"])
 #start_keyword = st.selectbox("請選擇參考文獻起始標題", ["參考文獻", "References", "Reference"])
-
+start_button = st.button("🚀 開始查詢")
 # ========== 上傳並處理 ==========
-if uploaded_file:
+if uploaded_file and start_button:
     with tempfile.NamedTemporaryFile(delete=False, suffix=".docx") as tmp:
         tmp.write(uploaded_file.read())
         tmp_path = tmp.name
