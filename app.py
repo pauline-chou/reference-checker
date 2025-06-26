@@ -9,6 +9,7 @@ import pandas as pd
 from datetime import datetime
 from io import StringIO
 from serpapi import GoogleSearch
+import pdfplumber
 
 # ========== API Key 管理 ==========
 def get_scopus_key():
@@ -131,6 +132,38 @@ def extract_paragraphs_from_docx(file):
     doc = Document(file)
     return [para.text.strip() for para in doc.paragraphs if para.text.strip()]
 
+# ========== PDF 處理 ==========
+def extract_paragraphs_from_pdf(file):
+    all_lines = []
+
+    with pdfplumber.open(file) as pdf:
+        for page in pdf.pages:
+            text = page.extract_text()
+            if text:
+                lines = [line.strip() for line in text.split('\n') if line.strip()]
+                all_lines.extend(lines)
+
+    # 合併段落
+    merged_paragraphs = []
+    current_para = ""
+
+    for line in all_lines:
+        # 嘗試辨識是否為新文獻開頭（中英文）
+        is_new_ref = re.match(r"^[A-Z][\w\-\’]+.*\(\d{4}\)", line) or re.match(r"^[\u4e00-\u9fff].*，\d{4}。", line)
+        
+        if is_new_ref and current_para:
+            merged_paragraphs.append(current_para.strip())
+            current_para = line
+        else:
+            current_para += " " + line
+
+    if current_para:
+        merged_paragraphs.append(current_para.strip())
+
+    return merged_paragraphs
+
+
+# ========== 萃取參考文獻 ==========
 def extract_reference_section(paragraphs, start_keyword):
     start_index = -1
     for i, p in enumerate(paragraphs):
@@ -138,6 +171,16 @@ def extract_reference_section(paragraphs, start_keyword):
             start_index = i + 1
             break
     return paragraphs[start_index:] if start_index != -1 else []
+
+# ========== 偵測格式 ==========
+def detect_reference_style(ref_text):
+    # IEEE 通常開頭是 [1]，或含有英文引號 "標題"
+    if re.match(r'^\[\d+\]', ref_text) or '"' in ref_text:
+        return "IEEE"
+    # APA 常見結構：作者（西元年）。標題。
+    if re.search(r'\(\d{4}\)\.', ref_text) or re.search(r'，\d{4}。', ref_text):
+        return "APA"
+    return "Unknown"
 
 # ========== 擷取標題 ==========
 def extract_title(ref_text, style):
@@ -172,9 +215,21 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 st.markdown(" ")
-uploaded_file = st.file_uploader("請上傳 Word 檔案（.docx）", type=["docx"])
-style = st.selectbox("請選擇參考文獻格式", ["APA", "IEEE"])
-#start_keyword = st.selectbox("請選擇參考文獻起始標題", ["參考文獻", "References", "Reference"])
+uploaded_file = st.file_uploader("請上傳 Word 或 PDF 檔案", type=["docx", "pdf"])
+if uploaded_file:
+    file_ext = uploaded_file.name.split(".")[-1].lower()
+    uploaded_file.seek(0)  # 每次讀之前重設檔案指標
+
+    if file_ext == "docx":
+        paragraphs = extract_paragraphs_from_docx(uploaded_file)
+    elif file_ext == "pdf":
+        paragraphs = extract_paragraphs_from_pdf(uploaded_file)
+    else:
+        st.error("不支援的檔案格式")
+        st.stop()
+
+    references = extract_reference_section(paragraphs, start_keyword="參考文獻")
+
 start_button = st.button("🚀 開始查詢")
 
 # ========== 上傳並處理 ==========
@@ -184,11 +239,17 @@ if "paragraphs" not in st.session_state:
     st.session_state.paragraphs = None
 
 if uploaded_file and start_button:
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".docx") as tmp:
-        tmp.write(uploaded_file.read())
-        tmp_path = tmp.name
+    uploaded_file.seek(0)  # 重設檔案指標
+    file_ext = uploaded_file.name.split(".")[-1].lower()
 
-    paragraphs = extract_paragraphs_from_docx(tmp_path)
+    if file_ext == "docx":
+        paragraphs = extract_paragraphs_from_docx(uploaded_file)
+    elif file_ext == "pdf":
+        paragraphs = extract_paragraphs_from_pdf(uploaded_file)
+    else:
+        st.error("❌ 不支援的檔案格式，請上傳 Word (.docx) 或 PDF (.pdf) 檔案")
+        st.stop()
+
     st.session_state.paragraphs = paragraphs  # 儲存下來供後續使用
 
     auto_keywords = ["參考文獻", "References", "Reference"]
@@ -209,11 +270,19 @@ if uploaded_file and start_button:
 
     if matched_section:
         title_pairs = []
+        undetected_refs = []
         for ref in matched_section:
-            title = extract_title(ref, style)
+            detected_style = detect_reference_style(ref)
+            title = extract_title(ref, detected_style)
             if title:
                 title_pairs.append((ref, title))
-
+            else:
+                undetected_refs.append((ref, detected_style))
+        if undetected_refs:
+            with st.expander(f"⚠️ 無法擷取標題的參考文獻（{len(undetected_refs)} 筆）", expanded=False):
+                for i, (ref, style) in enumerate(undetected_refs, 1):
+                    st.markdown(f"{i}. 嘗試偵測為 `{style}`，但無法擷取標題：\n\n`{ref}`", unsafe_allow_html=True)
+            st.warning("上述文獻未能成功擷取標題，因此未進行查詢。建議人工確認格式或改為標準寫法。")
         #開始查詢
         st.subheader("📊 正在查詢中，請稍候...")
         crossref_doi_hits = {}
