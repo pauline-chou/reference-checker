@@ -2,13 +2,15 @@ import streamlit as st
 import re
 import urllib.parse
 from docx import Document
-import tempfile
 import requests
 from difflib import SequenceMatcher
 import pandas as pd
 from datetime import datetime
 from io import StringIO
 from serpapi import GoogleSearch
+import fitz 
+import re
+
 
 # ========== API Key 管理 ==========
 def get_scopus_key():
@@ -132,17 +134,23 @@ def extract_paragraphs_from_docx(file):
     doc = Document(file)
     return [para.text.strip() for para in doc.paragraphs if para.text.strip()]
 
-
-
+# ========== PDF 處理 ==========
+def extract_paragraphs_from_pdf(file):
+    text = ""
+    with fitz.open(stream=file.read(), filetype="pdf") as doc:
+        for page in doc:
+            page_text = page.get_text("text")
+            text += page_text + "\n"
+    paragraphs = [p.strip() for p in text.split("\n") if p.strip()]
+    return paragraphs
 
 # ========== 萃取參考文獻 ==========
-def extract_reference_section(paragraphs, start_keyword):
-    start_index = -1
-    for i, p in enumerate(paragraphs):
-        if start_keyword.lower() in p.lower():
-            start_index = i + 1
-            break
-    return paragraphs[start_index:] if start_index != -1 else []
+def extract_reference_section_from_bottom(paragraphs, start_keywords=["參考文獻", "References", "Reference"]):
+    for i in reversed(range(len(paragraphs))):  # 從底部往上找
+        for keyword in start_keywords:
+            if keyword.lower() in paragraphs[i].lower():
+                return paragraphs[i + 1:]
+    return []  # 找不到就回傳空列表
 
 # ========== 偵測格式 ==========
 def detect_reference_style(ref_text):
@@ -153,6 +161,39 @@ def detect_reference_style(ref_text):
     if re.search(r'\(\d{4}\)\.', ref_text) or re.search(r'，\d{4}。', ref_text):
         return "APA"
     return "Unknown"
+
+# ========== 段落合併器（PDF 專用，根據參考文獻開頭切分） ==========
+
+def is_reference_head(para):
+    """判斷是否為一條參考文獻的開頭（APA 或 IEEE）"""
+    # APA 風格: 作者 (年份)
+    if re.match(r".+\(\d{4}\)", para):
+        return True
+    # IEEE 風格: 開頭為 [數字]
+    if re.match(r"^\[\d+\]", para):
+        return True
+    return False
+
+def merge_references_by_heads(paragraphs):
+    """根據參考文獻的開頭段落，合併成完整的一條參考文獻"""
+    merged = []
+    current = ""
+    for para in paragraphs:
+        if is_reference_head(para):
+            if current:
+                merged.append(current.strip())
+            current = para
+        else:
+            current += " " + para
+    if current:
+        merged.append(current.strip())
+    return merged
+
+
+
+
+
+
 
 # ========== 擷取標題 ==========
 def extract_title(ref_text, style):
@@ -188,7 +229,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 st.markdown(" ")
 
-uploaded_files = st.file_uploader("請上傳最多 10 個 Word 檔案", type=["docx"], accept_multiple_files=True)
+uploaded_files = st.file_uploader("請上傳最多 10 個 Word 或 PDF 檔案", type=["docx", "pdf"], accept_multiple_files=True)
 # 攔截超過 10 檔案的情況
 if uploaded_files and len(uploaded_files) > 10:
     st.error("❌ 上傳檔案超過 10 個，請刪除部分檔案後再試一次。")
@@ -212,14 +253,19 @@ if uploaded_files and start_button:
         if file_ext == "docx":
             paragraphs = extract_paragraphs_from_docx(uploaded_file)
             skip_section_detection = False
+        elif file_ext == "pdf":
+            paragraphs = extract_paragraphs_from_pdf(uploaded_file)
+            skip_section_detection = False
+            
+        else:
+            st.warning(f"⚠️ 檔案 `{uploaded_file.name}` 格式不支援，將略過。")
+            continue
+
 
         # 偵測參考文獻段落
         matched_section = []
         if not skip_section_detection:
-            for kw in ["參考文獻", "References", "Reference"]:
-                matched_section = extract_reference_section(paragraphs, kw)
-                if matched_section:
-                    break
+            matched_section = extract_reference_section_from_bottom(paragraphs)
             # 🛠️ fallback：如果沒找到任何符合的關鍵字段落，就直接用整份處理
             if not matched_section:
                 st.warning(f"⚠️ 檔案 `{uploaded_file.name}` 未偵測到參考文獻標題，將嘗試以全文處理。")
@@ -227,13 +273,27 @@ if uploaded_files and start_button:
         else:
             matched_section = paragraphs
 
-        # 擷取標題
+        with st.expander("📌 擷取到的參考文獻段落（供人工檢查）"):
+            for i, para in enumerate(matched_section, 1):
+                st.markdown(f"**{i}.** {para}")
+        
+        # 合併 PDF 分段參考文獻（使用統一的「開頭合併法」）
+        if file_ext == "pdf":
+            merged_references = merge_references_by_heads(matched_section)
+        else:
+            merged_references = matched_section
+
+
+
+
+        # 改為使用 merged_references 處理每筆文獻
         title_pairs = []
-        for ref in matched_section:
+        for ref in merged_references:
             style = detect_reference_style(ref)
             title = extract_title(ref, style)
             if title:
                 title_pairs.append((ref, title))
+
 
         # 查詢處理
         crossref_doi_hits = {}

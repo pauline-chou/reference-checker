@@ -5,3 +5,5 @@ python-docx
 beautifulsoup4
 google-search-results
 pdf2docx
+PyPDF2
+PyMuPDF
