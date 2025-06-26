@@ -81,7 +81,7 @@ def search_scopus_by_title(title):
     }
     params = {
         "query": f'TITLE("{title}")',
-        "count": 1
+        "count": 3
     }
     response = requests.get(base_url, headers=headers, params=params)
     if response.status_code == 200:
@@ -102,7 +102,7 @@ def search_scholar_by_title(title, api_key, threshold=0.90):
         "engine": "google_scholar",
         "q": title,
         "api_key": api_key,
-        "num": 1
+        "num": 3
     }
     results = GoogleSearch(params).get_dict()
     organic = results.get("organic_results", [])
