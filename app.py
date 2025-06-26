@@ -81,7 +81,7 @@ def search_scopus_by_title(title):
     }
     params = {
         "query": f'TITLE("{title}")',
-        "count": 5
+        "count": 1
     }
     response = requests.get(base_url, headers=headers, params=params)
     if response.status_code == 200:
