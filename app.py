@@ -189,7 +189,10 @@ st.markdown("""
 st.markdown(" ")
 
 uploaded_files = st.file_uploader("請上傳最多 10 個 Word 檔案", type=["docx"], accept_multiple_files=True)
-
+# 攔截超過 10 檔案的情況
+if uploaded_files and len(uploaded_files) > 10:
+    st.error("❌ 上傳檔案超過 10 個，請刪除部分檔案後再試一次。")
+    st.stop()
 
 start_button = st.button("🚀 開始查詢")
 
