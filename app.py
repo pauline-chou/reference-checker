@@ -93,11 +93,11 @@ def search_scopus_by_title(title):
                 return entry.get('prism:url', 'https://www.scopus.com')
     return None
 
-# ========== serpapi ==========
-def search_scholar_by_title(title, api_key, threshold=0.95):
+# ========== Serpapi 查詢 ==========
+def search_scholar_by_title(title, api_key, threshold=0.90):
     search_url = f"https://scholar.google.com/scholar?q={urllib.parse.quote(title)}"
 
-    # 呼叫 SerpAPI（仍抓結果，但不信任它的結果）
+    # 呼叫 SerpAPI
     params = {
         "engine": "google_scholar",
         "q": title,
@@ -109,16 +109,21 @@ def search_scholar_by_title(title, api_key, threshold=0.95):
 
     if not organic:
         return search_url, "no_result"
-
-    first_title = organic[0].get("title", "")
+    
     cleaned_query = clean_title(title)
-    cleaned_result = clean_title(first_title)
+    
+    for result in organic:
+        result_title = result.get("title", "")
+        cleaned_result = clean_title(result_title)
+        
+        # 僅當標題「清洗後完全一致」才算 match
+        if cleaned_query == cleaned_result:
+            return search_url, "match"
 
-    # 僅當標題「清洗後完全一致」才算 match
-    if cleaned_query == cleaned_result:
-        return search_url, "match"
+        similarity = SequenceMatcher(None, cleaned_query, cleaned_result).ratio()
+        if similarity >= threshold:
+            return search_url, "similar"
 
-    # 其他一律視為無效（回搜尋頁，並標記為無結果）
     return search_url, "no_result"
 
 # ========== Word 處理 ==========
@@ -149,6 +154,7 @@ def extract_title(ref_text, style):
             if fallback:
                 return fallback.group(1).strip(" ,.")
     return None
+
 # ========== Streamlit UI ==========
 st.set_page_config(page_title="Reference Checker", layout="centered")
 if "start_query" not in st.session_state:
@@ -170,6 +176,7 @@ uploaded_file = st.file_uploader("請上傳 Word 檔案（.docx）", type=["docx
 style = st.selectbox("請選擇參考文獻格式", ["APA", "IEEE"])
 #start_keyword = st.selectbox("請選擇參考文獻起始標題", ["參考文獻", "References", "Reference"])
 start_button = st.button("🚀 開始查詢")
+
 # ========== 上傳並處理 ==========
 if "selected_kw" not in st.session_state:
     st.session_state.selected_kw = None
@@ -207,17 +214,12 @@ if uploaded_file and start_button:
             if title:
                 title_pairs.append((ref, title))
 
-        crossref_doi_hits = {}
-        scopus_hits = {}
-        scholar_hits = {}
-        not_found = []
-
         #開始查詢
         st.subheader("📊 正在查詢中，請稍候...")
         crossref_doi_hits = {}
         scopus_hits = {}
         scholar_hits = {}
-        crossref_similar = {}
+        scholar_similar = {}
         not_found = []
 
         progress_bar = st.progress(0.0)
@@ -238,6 +240,8 @@ if uploaded_file and start_button:
                 gs_url, gs_type = search_scholar_by_title(title, SERPAPI_KEY)
                 if gs_type == "match":
                     scholar_hits[original_ref] = gs_url
+                elif gs_type == "similar":
+                    scholar_similar[original_ref] = gs_url  # 加入 similar 分類
                 else:
                     not_found.append(original_ref)
 
@@ -248,7 +252,7 @@ if uploaded_file and start_button:
             "crossref_doi_hits": crossref_doi_hits,
             "scopus_hits": scopus_hits,
             "scholar_hits": scholar_hits,
-            "crossref_similar": crossref_similar,
+            "scholar_similar": scholar_similar,
             "not_found": not_found,
             "uploaded_filename": uploaded_file.name,
             "report_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -274,7 +278,7 @@ if st.session_state.query_results:
         not_found = query_data.get("not_found", [])
         title_pairs = query_data["title_pairs"]
         crossref_doi_hits = query_data["crossref_doi_hits"]
-        crossref_similar = query_data["crossref_similar"]
+        scholar_similar = query_data["scholar_similar"]
         uploaded_filename = query_data["uploaded_filename"]
         report_time = query_data["report_time"]
 
@@ -285,7 +289,7 @@ if st.session_state.query_results:
 
         hit_tab, similar_tab, miss_tab = st.tabs([
             f"🟢 命中結果（{matched_count}）",
-            f"🟡 Google Scholar 類似標題（{len(crossref_similar)}）",
+            f"🟡 Google Scholar 類似標題（{len(scholar_similar)}）",
             f"🔴 均查無結果（{len(not_found)}）"
         ])
 
@@ -309,9 +313,9 @@ if st.session_state.query_results:
                 st.info("沒有命中任何參考文獻。")
 
         with similar_tab:
-            if crossref_similar:
-                for i, (title, url) in enumerate(crossref_similar.items(), 1):
-                    with st.expander(f"{i}. {title}（Google Scholar）"):
+            if scholar_similar:
+                for i, (title, url) in enumerate(scholar_similar.items(), 1):
+                    with st.expander(f"{i}. {title}"):
                         st.markdown(f"🔗 [Google Scholar 結果連結]({url})", unsafe_allow_html=True)
                         st.warning("⚠️ 此為相似標題，請人工確認是否為正確文獻。")
             else:
@@ -336,15 +340,15 @@ if st.session_state.query_results:
                 export_data.append([ref, "標題命中（Scopus）", scopus_hits[ref]])
             elif ref in scholar_hits:
                 export_data.append([ref, "標題命中（Google Scholar）", scholar_hits[ref]])
-            elif ref in crossref_similar:
-                export_data.append([ref, "Google Scholar 類似標題", crossref_similar[ref]])
+            elif ref in scholar_similar:
+                export_data.append([ref, "Google Scholar 類似標題", scholar_similar[ref]])
             elif ref in not_found:
                 scholar_url = f"https://scholar.google.com/scholar?q={urllib.parse.quote(ref)}"
                 export_data.append([ref, "查無結果", scholar_url])
 
         total_refs = len(title_pairs)
         matched_exact = len(crossref_doi_hits) + len(scopus_hits) + len(scholar_hits)
-        matched_similar = len(crossref_similar)
+        matched_similar = len(scholar_similar)
         unmatched = len(not_found)
 
         header = StringIO()
@@ -367,7 +371,7 @@ if st.session_state.query_results:
         - {len(crossref_doi_hits)} 篇為「Crossref 有 DOI 資訊」
         - {len(scopus_hits)} 篇為「標題命中（Scopus）」
         - {len(scholar_hits)} 篇為「標題命中（Google Scholar）」
-        - {len(crossref_similar)} 篇為「Google Scholar 類似標題」
+        - {len(scholar_similar)} 篇為「Google Scholar 類似標題」
         - {len(not_found)} 篇為「查無結果」
         """)
         st.markdown("---")
