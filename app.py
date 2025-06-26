@@ -188,9 +188,8 @@ st.markdown("""
 """, unsafe_allow_html=True)
 st.markdown(" ")
 
-uploaded_files = st.file_uploader("請上傳最多 10 個 Word 或 PDF 檔案", type=["docx", "pdf"], accept_multiple_files=True)
+uploaded_files = st.file_uploader("請上傳最多 10 個 Word 檔案", type=["docx"], accept_multiple_files=True)
 
-st.caption("&nbsp;&nbsp;⚠️ 為提高準確率，請盡量上傳 Word 檔案。若使用 PDF，請避免雙欄排版，否則可能導致文獻擷取不完整。")
 
 start_button = st.button("🚀 開始查詢")
 
