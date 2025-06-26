@@ -9,7 +9,6 @@ import pandas as pd
 from datetime import datetime
 from io import StringIO
 from serpapi import GoogleSearch
-import pdfplumber
 
 # ========== API Key 管理 ==========
 def get_scopus_key():
@@ -133,82 +132,7 @@ def extract_paragraphs_from_docx(file):
     doc = Document(file)
     return [para.text.strip() for para in doc.paragraphs if para.text.strip()]
 
-# ========== 偵測單欄雙欄 ==========
-def is_two_column_pdf(pdf):
-    try:
-        mid_x = pdf.pages[0].width / 2
-        left_count = 0
-        right_count = 0
-        words = pdf.pages[0].extract_words()
-        for word in words:
-            if word["x0"] < mid_x:
-                left_count += 1
-            else:
-                right_count += 1
-        if left_count > 50 and right_count > 50:
-            return True
-        else:
-            return False
-    except Exception:
-        return False
 
-# ========== 雙欄 PDF 專用：擷取以 [1]、[2] 為開頭的文獻 ==========
-def extract_numbered_references(pdf):
-    full_text = ""
-    for page in pdf.pages:
-        text = page.extract_text()
-        if text:
-            full_text += "\n" + text
-
-    # 把所有 [1], [2], ..., [99] 開頭的文獻獨立抓出來
-    pattern = r'\[(\d{1,3})\](.*?)(?=\[\d{1,3}\]|$)'  # 非貪婪 + lookahead
-    matches = re.findall(pattern, full_text, re.DOTALL)
-
-    references = []
-    for idx, content in matches:
-        cleaned = f"[{idx}] {content.strip().replace('\n', ' ')}"
-        references.append(cleaned)
-
-    return references
-
-# ========== PDF 處理 ==========
-def extract_paragraphs_from_pdf(file):
-    all_lines = []
-
-    with pdfplumber.open(file) as pdf:
-        for page in pdf.pages:
-            text = page.extract_text()
-            if text:
-                lines = [line.strip() for line in text.split('\n') if line.strip()]
-                all_lines.extend(lines)
-
-    merged_paragraphs = []
-    buffer = ""
-
-    for line in all_lines:
-        line = line.strip()
-
-        # 判斷是否為 DOI
-        is_doi = re.match(r'^https?://doi\.org/\d{2}\.\d{4,9}/[-._;()/:A-Z0-9]+$', line, re.I)
-
-        # 是否為 APA 作者年份開頭
-        is_new_ref = re.match(r"^[A-Z][a-zA-Z,\s\-\.&]+?\(\d{4}\)", line)
-
-        if is_new_ref:
-            if buffer:
-                merged_paragraphs.append(buffer.strip())
-            buffer = line
-        elif is_doi:
-            buffer += " " + line
-            merged_paragraphs.append(buffer.strip())
-            buffer = ""
-        else:
-            buffer += " " + line
-
-    if buffer:
-        merged_paragraphs.append(buffer.strip())
-
-    return merged_paragraphs
 
 
 # ========== 萃取參考文獻 ==========
@@ -286,21 +210,6 @@ if uploaded_files and start_button:
         if file_ext == "docx":
             paragraphs = extract_paragraphs_from_docx(uploaded_file)
             skip_section_detection = False
-        elif file_ext == "pdf":
-            try:
-                with pdfplumber.open(uploaded_file) as pdf:
-                    if is_two_column_pdf(pdf):
-                        paragraphs = extract_numbered_references(pdf)
-                        skip_section_detection = True
-                    else:
-                        paragraphs = extract_paragraphs_from_pdf(uploaded_file)
-                        skip_section_detection = False
-            except Exception as e:
-                st.warning(f"❌ 無法處理 PDF `{uploaded_file.name}`：{e}")
-                continue
-        else:
-            st.warning(f"❌ 不支援的檔案格式：{uploaded_file.name}")
-            continue
 
         # 偵測參考文獻段落
         matched_section = []
