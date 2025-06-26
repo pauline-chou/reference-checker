@@ -129,6 +129,7 @@ def search_scholar_by_title(title, api_key, threshold=0.90):
 
 # ========== Word 處理 ==========
 def extract_paragraphs_from_docx(file):
+    # 使用 BytesIO 處理 UploadedFile
     doc = Document(file)
     return [para.text.strip() for para in doc.paragraphs if para.text.strip()]
 
@@ -181,22 +182,31 @@ def extract_paragraphs_from_pdf(file):
                 lines = [line.strip() for line in text.split('\n') if line.strip()]
                 all_lines.extend(lines)
 
-    # 合併段落
     merged_paragraphs = []
-    current_para = ""
+    buffer = ""
 
     for line in all_lines:
-        # 嘗試辨識是否為新文獻開頭（中英文）
-        is_new_ref = re.match(r"^[A-Z][\w\-\’]+.*\(\d{4}\)", line) or re.match(r"^[\u4e00-\u9fff].*，\d{4}。", line)
-        
-        if is_new_ref and current_para:
-            merged_paragraphs.append(current_para.strip())
-            current_para = line
-        else:
-            current_para += " " + line
+        line = line.strip()
 
-    if current_para:
-        merged_paragraphs.append(current_para.strip())
+        # 判斷是否為 DOI
+        is_doi = re.match(r'^https?://doi\.org/\d{2}\.\d{4,9}/[-._;()/:A-Z0-9]+$', line, re.I)
+
+        # 是否為 APA 作者年份開頭
+        is_new_ref = re.match(r"^[A-Z][a-zA-Z,\s\-\.&]+?\(\d{4}\)", line)
+
+        if is_new_ref:
+            if buffer:
+                merged_paragraphs.append(buffer.strip())
+            buffer = line
+        elif is_doi:
+            buffer += " " + line
+            merged_paragraphs.append(buffer.strip())
+            buffer = ""
+        else:
+            buffer += " " + line
+
+    if buffer:
+        merged_paragraphs.append(buffer.strip())
 
     return merged_paragraphs
 
@@ -246,250 +256,249 @@ st.title("📚 Reference Checker")
 
 st.markdown("""
 <div style="background-color: #fff9db; padding: 15px; border-left: 6px solid #f1c40f; border-radius: 6px;">
-    <span style="font-size: 16px; font-weight: bold;">⚠️ 注意事項</span><br>
+    <span style="font-size: 16px; font-weight: bold;">注意事項</span><br>
     <span style="font-size: 15px; color: #444;">
     為節省核對時間，本系統只查對有 DOI 碼的期刊論文。並未檢查期刊名稱、作者、卷期、頁碼，僅針對篇名進行核對。本系統僅提供初步篩選參考，比對後應進行人工核對，不得直接以本系統核對結果作為學術倫理判斷的依據。
     </span>
 </div>
 """, unsafe_allow_html=True)
 st.markdown(" ")
-uploaded_file = st.file_uploader("請上傳 Word 或 PDF 檔案", type=["docx", "pdf"])
+
+uploaded_files = st.file_uploader("請上傳最多 10 個 Word 或 PDF 檔案", type=["docx", "pdf"], accept_multiple_files=True)
+
+st.caption("&nbsp;&nbsp;⚠️ 為提高準確率，請盡量上傳 Word 檔案。若使用 PDF，請避免雙欄排版，否則可能導致文獻擷取不完整。")
 
 start_button = st.button("🚀 開始查詢")
 
-# ========== 上傳並處理 ==========
-if "selected_kw" not in st.session_state:
-    st.session_state.selected_kw = None
-if "paragraphs" not in st.session_state:
-    st.session_state.paragraphs = None
+if uploaded_files and start_button:
+    st.subheader("📊 正在查詢中，請稍候...")
 
-if uploaded_file and start_button:
-    uploaded_file.seek(0)  # 重設檔案指標
-    file_ext = uploaded_file.name.split(".")[-1].lower()
+    all_results = []
 
-    if file_ext == "docx":
-        paragraphs = extract_paragraphs_from_docx(uploaded_file)
+    for uploaded_file in uploaded_files:
+        file_ext = uploaded_file.name.split(".")[-1].lower()
+        st.markdown(f"📄 處理檔案： `{uploaded_file.name}`")
 
-    elif file_ext == "pdf":
-        with pdfplumber.open(uploaded_file) as pdf:
-            if is_two_column_pdf(pdf):
-                st.info("📄 偵測為雙欄 PDF")
-                paragraphs = extract_numbered_references(pdf)
-                st.session_state.skip_section_detection = True  # 通知後面不跑 extract_reference_section
-            else:
-                paragraphs = extract_paragraphs_from_pdf(uploaded_file)
-                st.session_state.skip_section_detection = False
+        # 顯示獨立進度條（要寫在檔案 for 迴圈內）
+        file_progress = st.progress(0.0)
 
-    else:
-        st.error("❌ 不支援的檔案格式，請上傳 Word (.docx) 或 PDF (.pdf) 檔案")
-        st.stop()
+        # 檔案解析
+        if file_ext == "docx":
+            paragraphs = extract_paragraphs_from_docx(uploaded_file)
+            skip_section_detection = False
+        elif file_ext == "pdf":
+            try:
+                with pdfplumber.open(uploaded_file) as pdf:
+                    if is_two_column_pdf(pdf):
+                        paragraphs = extract_numbered_references(pdf)
+                        skip_section_detection = True
+                    else:
+                        paragraphs = extract_paragraphs_from_pdf(uploaded_file)
+                        skip_section_detection = False
+            except Exception as e:
+                st.warning(f"❌ 無法處理 PDF `{uploaded_file.name}`：{e}")
+                continue
+        else:
+            st.warning(f"❌ 不支援的檔案格式：{uploaded_file.name}")
+            continue
 
-    st.session_state.paragraphs = paragraphs  # 儲存下來供後續使用
+        # 偵測參考文獻段落
+        matched_section = []
+        if not skip_section_detection:
+            for kw in ["參考文獻", "References", "Reference"]:
+                matched_section = extract_reference_section(paragraphs, kw)
+                if matched_section:
+                    break
+            # 🛠️ fallback：如果沒找到任何符合的關鍵字段落，就直接用整份處理
+            if not matched_section:
+                st.warning(f"⚠️ 檔案 `{uploaded_file.name}` 未偵測到參考文獻標題，將嘗試以全文處理。")
+                matched_section = paragraphs
+        else:
+            matched_section = paragraphs
 
-    auto_keywords = ["參考文獻", "References", "Reference"]
-    matched_section = []
-    matched_keyword = None
-
-    for kw in auto_keywords:
-        matched_section = extract_reference_section(paragraphs, kw)
-        if matched_section:
-            matched_keyword = kw
-            st.session_state.selected_kw = matched_keyword
-            st.session_state.matched_section = matched_section
-            break
-
-    else:
-        st.warning("⚠️ 無法偵測參考文獻起始標題，請確認是否為以下其中之一：『參考文獻』、『References』或『Reference』。")
-        st.stop()
-
-    if matched_section:
+        # 擷取標題
         title_pairs = []
-        undetected_refs = []
         for ref in matched_section:
-            detected_style = detect_reference_style(ref)
-            title = extract_title(ref, detected_style)
+            style = detect_reference_style(ref)
+            title = extract_title(ref, style)
             if title:
                 title_pairs.append((ref, title))
-            else:
-                undetected_refs.append((ref, detected_style))
-        if undetected_refs:
-            with st.expander(f"⚠️ 無法擷取標題的參考文獻（{len(undetected_refs)} 筆）", expanded=False):
-                for i, (ref, style) in enumerate(undetected_refs, 1):
-                    st.markdown(f"{i}. 嘗試偵測為 `{style}`，但無法擷取標題：\n\n`{ref}`", unsafe_allow_html=True)
-            st.warning("上述文獻未能成功擷取標題，因此未進行查詢。建議人工確認格式或改為標準寫法。")
-        #開始查詢
-        st.subheader("📊 正在查詢中，請稍候...")
+
+        # 查詢處理
         crossref_doi_hits = {}
         scopus_hits = {}
         scholar_hits = {}
         scholar_similar = {}
         not_found = []
 
-        progress_bar = st.progress(0.0)
-
-        for i, (original_ref, title) in enumerate(title_pairs, 1):
-            doi = extract_doi(original_ref)
+        for i, (ref, title) in enumerate(title_pairs, 1):
+            doi = extract_doi(ref)
             if doi:
                 title_from_doi, url = search_crossref_by_doi(doi)
                 if title_from_doi:
-                    crossref_doi_hits[original_ref] = url
-                    progress_bar.progress(i / len(title_pairs))
-                    continue  # 成功查到 DOI 就略過標題查詢
+                    crossref_doi_hits[ref] = url
+                    file_progress.progress(i / len(title_pairs))
+                    continue
 
             url = search_scopus_by_title(title)
             if url:
-                scopus_hits[original_ref] = url
+                scopus_hits[ref] = url
             else:
                 gs_url, gs_type = search_scholar_by_title(title, SERPAPI_KEY)
                 if gs_type == "match":
-                    scholar_hits[original_ref] = gs_url
+                    scholar_hits[ref] = gs_url
                 elif gs_type == "similar":
-                    scholar_similar[original_ref] = gs_url  # 加入 similar 分類
+                    scholar_similar[ref] = gs_url
                 else:
-                    not_found.append(original_ref)
+                    not_found.append(ref)
 
-            progress_bar.progress(i / len(title_pairs))
-            
-        st.session_state.query_results = {
+            file_progress.progress(i / len(title_pairs))
+
+        file_results = {
+            "filename": uploaded_file.name,
             "title_pairs": title_pairs,
             "crossref_doi_hits": crossref_doi_hits,
             "scopus_hits": scopus_hits,
             "scholar_hits": scholar_hits,
             "scholar_similar": scholar_similar,
             "not_found": not_found,
-            "uploaded_filename": uploaded_file.name,
             "report_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         }
-         # 規則表格
-        st.markdown("---")
-        st.subheader("🧠 查詢結果分類規則")
-        rules = [
-            ["🟢 Crossref DOI 命中", "Crossref", "使用參考文獻中的 DOI 直接查詢", "否"],
-            ["🟢 標題命中", "Scopus / Google Scholar", "標題完全一致", "否"],
-            ["🟡 Google Scholar 類似標題", "Google Scholar", "標題相似或僅部分關鍵字一致", "是"],
-            ["🔴 查無結果", "—", "無任何結果或相似度過低", "—"],
-        ]
-        df_rules = pd.DataFrame(rules, columns=["分類燈號", "來源", "比對方式", "需人工確認"])
-        st.dataframe(df_rules, use_container_width=True)
+
+        all_results.append(file_results)
+
+    st.session_state.query_results = all_results
+
+
+
+
+
+
+# ========== 上傳並處理 ==========
 
 
 if st.session_state.query_results:
         st.markdown("---")
         st.subheader("📊 查詢結果分類")
+        for result in st.session_state.query_results:
+            not_found = result["not_found"]
+            title_pairs = result["title_pairs"]
+            crossref_doi_hits = result["crossref_doi_hits"]
+            scholar_similar = result["scholar_similar"]
+            uploaded_filename = result["filename"]
+            report_time = result["report_time"]
+            scopus_hits = result["scopus_hits"]
+            scholar_hits = result["scholar_hits"]
 
-        query_data = st.session_state.query_results
-        not_found = query_data.get("not_found", [])
-        title_pairs = query_data["title_pairs"]
-        crossref_doi_hits = query_data["crossref_doi_hits"]
-        scholar_similar = query_data["scholar_similar"]
-        uploaded_filename = query_data["uploaded_filename"]
-        report_time = query_data["report_time"]
+            st.markdown(f"📄 檔案名稱： `{uploaded_filename}`")
+            matched_count = len(crossref_doi_hits) + len(scopus_hits) + len(scholar_hits)
+            hit_tab, similar_tab, miss_tab = st.tabs([
+                f"🟢 命中結果（{matched_count}）",
+                f"🟡 Google Scholar 類似標題（{len(scholar_similar)}）",
+                f"🔴 均查無結果（{len(not_found)}）"
+            ])
 
-        scopus_hits = query_data["scopus_hits"]
-        scholar_hits = query_data["scholar_hits"]
+            with hit_tab:
+                if crossref_doi_hits:
+                    with st.expander(f"\U0001F7E2 Crossref DOI 命中（{len(crossref_doi_hits)}）"):
+                        for i, (title, url) in enumerate(crossref_doi_hits.items(), 1):
+                            st.markdown(f"{i}. {title}  \n🔗 [DOI 連結]({url})", unsafe_allow_html=True)
 
-        matched_count = len(crossref_doi_hits) + len(scopus_hits) + len(scholar_hits)
+                if scopus_hits:
+                    with st.expander(f"\U0001F7E2 Scopus 標題命中（{len(scopus_hits)}）"):
+                        for i, (title, url) in enumerate(scopus_hits.items(), 1):
+                            st.markdown(f"{i}. {title}  \n🔗 [Scopus 連結]({url})", unsafe_allow_html=True)
 
-        hit_tab, similar_tab, miss_tab = st.tabs([
-            f"🟢 命中結果（{matched_count}）",
-            f"🟡 Google Scholar 類似標題（{len(scholar_similar)}）",
-            f"🔴 均查無結果（{len(not_found)}）"
-        ])
+                if scholar_hits:
+                    with st.expander(f"\U0001F7E2 Google Scholar 標題命中（{len(scholar_hits)}）"):
+                        for i, (title, url) in enumerate(scholar_hits.items(), 1):
+                            st.markdown(f"{i}. {title}  \n🔗 [Scholar 連結]({url})", unsafe_allow_html=True)
 
-        with hit_tab:
-            if crossref_doi_hits:
-                with st.expander(f"\U0001F7E2 Crossref DOI 命中（{len(crossref_doi_hits)}）"):
-                    for i, (title, url) in enumerate(crossref_doi_hits.items(), 1):
-                        st.markdown(f"{i}. {title}  \n🔗 [DOI 連結]({url})", unsafe_allow_html=True)
+                if not (crossref_doi_hits or scopus_hits or scholar_hits):
+                    st.info("沒有命中任何參考文獻。")
 
-            if scopus_hits:
-                with st.expander(f"\U0001F7E2 Scopus 標題命中（{len(scopus_hits)}）"):
-                    for i, (title, url) in enumerate(scopus_hits.items(), 1):
-                        st.markdown(f"{i}. {title}  \n🔗 [Scopus 連結]({url})", unsafe_allow_html=True)
+            with similar_tab:
+                if scholar_similar:
+                    for i, (title, url) in enumerate(scholar_similar.items(), 1):
+                        with st.expander(f"{i}. {title}"):
+                            st.markdown(f"🔗 [Google Scholar 結果連結]({url})", unsafe_allow_html=True)
+                            st.warning("⚠️ 此為相似標題，請人工確認是否為正確文獻。")
+                else:
+                    st.info("無標題相似但不一致的結果。")
 
-            if scholar_hits:
-                with st.expander(f"\U0001F7E2 Google Scholar 標題命中（{len(scholar_hits)}）"):
-                    for i, (title, url) in enumerate(scholar_hits.items(), 1):
-                        st.markdown(f"{i}. {title}  \n🔗 [Scholar 連結]({url})", unsafe_allow_html=True)
-
-            if not (crossref_doi_hits or scopus_hits or scholar_hits):
-                st.info("沒有命中任何參考文獻。")
-
-        with similar_tab:
-            if scholar_similar:
-                for i, (title, url) in enumerate(scholar_similar.items(), 1):
-                    with st.expander(f"{i}. {title}"):
-                        st.markdown(f"🔗 [Google Scholar 結果連結]({url})", unsafe_allow_html=True)
-                        st.warning("⚠️ 此為相似標題，請人工確認是否為正確文獻。")
-            else:
-                st.info("無標題相似但不一致的結果。")
-
-        with miss_tab:
-            if not_found:
-                for i, title in enumerate(not_found, 1):
-                    scholar_url = f"https://scholar.google.com/scholar?q={urllib.parse.quote(title)}"
-                    st.markdown(f"{i}. {title}  \n🔗 [Google Scholar 搜尋]({scholar_url})", unsafe_allow_html=True)
-                st.markdown("👉 請考慮手動搜尋 Google Scholar。")
-            else:
-                st.success("所有標題皆成功查詢！")
+            with miss_tab:
+                if not_found:
+                    for i, title in enumerate(not_found, 1):
+                        scholar_url = f"https://scholar.google.com/scholar?q={urllib.parse.quote(title)}"
+                        st.markdown(f"{i}. {title}  \n🔗 [Google Scholar 搜尋]({scholar_url})", unsafe_allow_html=True)
+                    st.markdown("👉 請考慮手動搜尋 Google Scholar。")
+                else:
+                    st.success("所有標題皆成功查詢！")
 
         # 下載結果
         st.markdown("---")
-        export_data = []
-        for ref, title in title_pairs:
-            if ref in crossref_doi_hits:
-                export_data.append([ref, "Crossref 有 DOI 資訊", crossref_doi_hits[ref]])
-            elif ref in scopus_hits:
-                export_data.append([ref, "標題命中（Scopus）", scopus_hits[ref]])
-            elif ref in scholar_hits:
-                export_data.append([ref, "標題命中（Google Scholar）", scholar_hits[ref]])
-            elif ref in scholar_similar:
-                export_data.append([ref, "Google Scholar 類似標題", scholar_similar[ref]])
-            elif ref in not_found:
-                scholar_url = f"https://scholar.google.com/scholar?q={urllib.parse.quote(ref)}"
-                export_data.append([ref, "查無結果", scholar_url])
 
-        total_refs = len(title_pairs)
-        matched_exact = len(crossref_doi_hits) + len(scopus_hits) + len(scholar_hits)
-        matched_similar = len(scholar_similar)
-        unmatched = len(not_found)
+        export_data = []
+        for result in st.session_state.query_results:
+            filename = result["filename"]
+            for ref, title in result["title_pairs"]:
+                if ref in result["crossref_doi_hits"]:
+                    export_data.append([filename, ref, "Crossref 有 DOI 資訊", result["crossref_doi_hits"][ref]])
+                elif ref in result["scopus_hits"]:
+                    export_data.append([filename, ref, "標題命中（Scopus）", result["scopus_hits"][ref]])
+                elif ref in result["scholar_hits"]:
+                    export_data.append([filename, ref, "標題命中（Google Scholar）", result["scholar_hits"][ref]])
+                elif ref in result["scholar_similar"]:
+                    export_data.append([filename, ref, "Google Scholar 類似標題", result["scholar_similar"][ref]])
+                elif ref in result["not_found"]:
+                    scholar_url = f"https://scholar.google.com/scholar?q={urllib.parse.quote(ref)}"
+                    export_data.append([filename, ref, "查無結果", scholar_url])
+        total_refs = sum(len(r["title_pairs"]) for r in st.session_state.query_results)
+        matched_exact = sum(len(r["crossref_doi_hits"]) + len(r["scopus_hits"]) + len(r["scholar_hits"]) for r in st.session_state.query_results)
+        matched_similar = sum(len(r["scholar_similar"]) for r in st.session_state.query_results)
+        unmatched = sum(len(r["not_found"]) for r in st.session_state.query_results)
 
         header = StringIO()
-        header.write(f"檔案名稱：{uploaded_filename}\n")
         header.write(f"報告產出時間：{report_time}\n\n")
-        header.write("初步篩選核對結果：\n")
-        header.write(f"本篇論文共有 {total_refs} 篇參考文獻，其中有 {matched_exact} 篇有找到相同篇名，有 {matched_similar} 篇找到類似篇名，{unmatched} 篇未找到對應的期刊論文，可能是專書、研討會論文、產業報告或其他論文，需要人工進行後續核對。\n\n")
         header.write("說明：\n")
         header.write("為節省核對時間，本系統只查對有DOI碼的期刊論文。且並未檢查期刊名稱、作者、卷期、頁碼。只針對篇名進行核對。\n")
         header.write("本系統只是為了提供初步篩選，比對後應接著進行人工核對，任何人都不應該以本系統核對結果作為任何學術倫理判斷之基礎。\n\n")
 
         csv_buffer = StringIO()
         csv_buffer.write(header.getvalue())
-        df_export = pd.DataFrame(export_data, columns=["原始參考文獻", "查核結果", "連結"])
-        df_export.to_csv(csv_buffer, index=False)
+        if not export_data:
+            st.warning("⚠️ 沒有可匯出的查核結果。")
+        else:
+            df_export = pd.DataFrame(export_data, columns=["檔案名稱", "原始參考文獻", "查核結果", "連結"])
+            df_export.to_csv(csv_buffer, index=False)
+
+        # 統計所有檔案的總數
+        total_files = len(st.session_state.query_results)
+        total_refs = sum(len(r["title_pairs"]) for r in st.session_state.query_results)
+        matched_crossref = sum(len(r["crossref_doi_hits"]) for r in st.session_state.query_results)
+        matched_scopus = sum(len(r["scopus_hits"]) for r in st.session_state.query_results)
+        matched_scholar = sum(len(r["scholar_hits"]) for r in st.session_state.query_results)
+        matched_similar = sum(len(r["scholar_similar"]) for r in st.session_state.query_results)
+        matched_notfound = sum(len(r["not_found"]) for r in st.session_state.query_results)
+
 
         st.markdown(f"""
-        📌 查核結果說明：本篇論文共有 {total_refs} 篇參考文獻，其中：
+        📌 查核結果說明：本次共處理 **{total_files} 篇論文**，總共擷取 **{total_refs} 篇參考文獻**，其中：
 
-        - {len(crossref_doi_hits)} 篇為「Crossref 有 DOI 資訊」
-        - {len(scopus_hits)} 篇為「標題命中（Scopus）」
-        - {len(scholar_hits)} 篇為「標題命中（Google Scholar）」
-        - {len(scholar_similar)} 篇為「Google Scholar 類似標題」
-        - {len(not_found)} 篇為「查無結果」
+        - {matched_crossref} 篇為「Crossref 有 DOI 資訊」
+        - {matched_scopus} 篇為「標題命中（Scopus）」
+        - {matched_scholar} 篇為「標題命中（Google Scholar）」
+        - {matched_similar} 篇為「Google Scholar 類似標題」
+        - {matched_notfound} 篇為「查無結果」
         """)
         st.markdown("---")
         
         st.subheader("📥 下載查詢結果")
-        col1, col2 = st.columns([1, 1])
-        with col1:
-            st.download_button(
-                label="📤 下載結果 CSV 檔",
-                data=csv_buffer.getvalue().encode('utf-8-sig'),
-                file_name="reference_results.csv",
-                mime="text/csv"
-            )
-        with col2:
-            if st.button("🔁 重新上傳其他檔案"):
-                for key in list(st.session_state.keys()):
-                    del st.session_state[key]
-                st.rerun()
+
+        st.download_button(
+            label="📤 下載結果 CSV 檔",
+            data=csv_buffer.getvalue().encode('utf-8-sig'),
+            file_name="reference_results.csv",
+            mime="text/csv"
+        )
+        st.write("🔁 若要重新上傳檔案，請按下鍵盤上的 F5 或點擊瀏覽器重新整理按鈕")    

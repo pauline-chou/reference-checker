@@ -2,7 +2,6 @@ streamlit
 pandas
 scholarly
 python-docx
-openpyxl
 beautifulsoup4
 google-search-results
-pdfplumber
+pdf2docx
