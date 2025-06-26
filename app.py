@@ -132,6 +132,44 @@ def extract_paragraphs_from_docx(file):
     doc = Document(file)
     return [para.text.strip() for para in doc.paragraphs if para.text.strip()]
 
+# ========== 偵測單欄雙欄 ==========
+def is_two_column_pdf(pdf):
+    try:
+        mid_x = pdf.pages[0].width / 2
+        left_count = 0
+        right_count = 0
+        words = pdf.pages[0].extract_words()
+        for word in words:
+            if word["x0"] < mid_x:
+                left_count += 1
+            else:
+                right_count += 1
+        if left_count > 50 and right_count > 50:
+            return True
+        else:
+            return False
+    except Exception:
+        return False
+
+# ========== 雙欄 PDF 專用：擷取以 [1]、[2] 為開頭的文獻 ==========
+def extract_numbered_references(pdf):
+    full_text = ""
+    for page in pdf.pages:
+        text = page.extract_text()
+        if text:
+            full_text += "\n" + text
+
+    # 把所有 [1], [2], ..., [99] 開頭的文獻獨立抓出來
+    pattern = r'\[(\d{1,3})\](.*?)(?=\[\d{1,3}\]|$)'  # 非貪婪 + lookahead
+    matches = re.findall(pattern, full_text, re.DOTALL)
+
+    references = []
+    for idx, content in matches:
+        cleaned = f"[{idx}] {content.strip().replace('\n', ' ')}"
+        references.append(cleaned)
+
+    return references
+
 # ========== PDF 處理 ==========
 def extract_paragraphs_from_pdf(file):
     all_lines = []
@@ -216,19 +254,6 @@ st.markdown("""
 """, unsafe_allow_html=True)
 st.markdown(" ")
 uploaded_file = st.file_uploader("請上傳 Word 或 PDF 檔案", type=["docx", "pdf"])
-if uploaded_file:
-    file_ext = uploaded_file.name.split(".")[-1].lower()
-    uploaded_file.seek(0)  # 每次讀之前重設檔案指標
-
-    if file_ext == "docx":
-        paragraphs = extract_paragraphs_from_docx(uploaded_file)
-    elif file_ext == "pdf":
-        paragraphs = extract_paragraphs_from_pdf(uploaded_file)
-    else:
-        st.error("不支援的檔案格式")
-        st.stop()
-
-    references = extract_reference_section(paragraphs, start_keyword="參考文獻")
 
 start_button = st.button("🚀 開始查詢")
 
@@ -244,8 +269,17 @@ if uploaded_file and start_button:
 
     if file_ext == "docx":
         paragraphs = extract_paragraphs_from_docx(uploaded_file)
+
     elif file_ext == "pdf":
-        paragraphs = extract_paragraphs_from_pdf(uploaded_file)
+        with pdfplumber.open(uploaded_file) as pdf:
+            if is_two_column_pdf(pdf):
+                st.info("📄 偵測為雙欄 PDF")
+                paragraphs = extract_numbered_references(pdf)
+                st.session_state.skip_section_detection = True  # 通知後面不跑 extract_reference_section
+            else:
+                paragraphs = extract_paragraphs_from_pdf(uploaded_file)
+                st.session_state.skip_section_detection = False
+
     else:
         st.error("❌ 不支援的檔案格式，請上傳 Word (.docx) 或 PDF (.pdf) 檔案")
         st.stop()
