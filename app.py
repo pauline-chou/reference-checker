@@ -177,6 +177,103 @@ def extract_reference_section_from_bottom(paragraphs, start_keywords=None):
 
     return [], None
 
+# ========== 萃取參考文獻 (加強版) ==========
+def extract_reference_section_improved(paragraphs):
+    """
+    改進的參考文獻區段識別，使用多重策略和容錯機制
+    返回：(參考文獻段落列表, 識別到的標題, 識別方法)
+    """
+    
+    def is_reference_format(text):
+        """判斷段落是否符合參考文獻格式"""
+        text = text.strip()
+        if len(text) < 10:  # 太短不太可能是參考文獻
+            return False
+            
+        # APA格式：包含年份格式 (YYYY)
+        if re.search(r'\(\d{4}[a-c]?\)', text):
+            return True
+            
+        # IEEE格式：開頭是 [數字]
+        if re.match(r'^\[\d+\]', text):
+            return True
+            
+        # 通用格式：包含作者姓名模式
+        if re.search(r'[A-Z][a-z]+,\s*[A-Z]\.', text):
+            return True
+            
+        return False
+    
+    def is_chapter_title(text):
+        """判斷是否為章節標題"""
+        text = text.strip()
+        
+        # 中文數字章節標題
+        chinese_nums = r'[一二三四五六七八九十壹貳參肆伍陸柒捌玖拾]+'
+        if re.match(f'^{chinese_nums}[、．.]', text):
+            return True
+            
+        # 阿拉伯數字章節標題
+        if re.match(r'^\d+[、．.]', text):
+            return True
+            
+        # 英文章節標題
+        if re.match(r'^[IVX]+[、．.]', text):
+            return True
+            
+        return False
+    
+    # 策略1：明確的參考文獻標題識別
+    reference_keywords = [
+        "參考文獻", "references", "reference", 
+        "bibliography", "works cited", "literature cited"
+    ]
+    
+    for i, para in enumerate(paragraphs):
+        para_clean = para.strip()
+        para_lower = para_clean.lower()
+        
+        # 檢查章節標題格式的參考文獻
+        if is_chapter_title(para_clean):
+            for keyword in reference_keywords:
+                if keyword in para_lower:
+                    return paragraphs[i + 1:], para_clean, "章節標題識別"
+        
+        # 檢查純標題格式
+        if para_lower in reference_keywords:
+            return paragraphs[i + 1:], para_clean, "純標題識別"
+        
+        # 補強：參考文獻前有數字或符號 
+        para_no_space = re.sub(r'\s+', '', para_clean)
+        if re.match(r'^(\d+|[IVXLCDM]+|[一二三四五六七八九十壹貳參肆伍陸柒捌玖拾]+)?[、．. ]?參考文獻$', para_no_space):
+            return paragraphs[i + 1:], para_clean, "標題含前置數字"  
+
+    
+    # 策略2：關鍵字模糊匹配
+    for i in range(len(paragraphs) - 1, -1, -1):  # 從底部向上
+        para = paragraphs[i].strip().lower()
+        
+        # 跳過明顯的正文段落
+        if len(para) > 100:  # 太長可能是正文
+            continue
+            
+        # 模糊匹配參考文獻相關詞彙
+        fuzzy_keywords = ["reference", "參考", "bibliography", "文獻"]
+        for keyword in fuzzy_keywords:
+            if keyword in para and len(para) < 50:
+                # 檢查後續段落是否有參考文獻格式
+                remaining = paragraphs[i + 1:]
+                if remaining and sum(1 for p in remaining[:5] if is_reference_format(p)) >= 2:
+                    return paragraphs[i + 1:], paragraphs[i], "模糊關鍵字識別"
+    
+    # 所有策略都失敗
+    return [], None, "未找到參考文獻區段"
+
+
+
+
+
+
 
 # ========== 偵測格式 ==========
 def detect_reference_style(ref_text):
@@ -337,22 +434,31 @@ if uploaded_files and start_button:
         # 偵測參考文獻段落
         matched_section = []
         if not skip_section_detection:
+            matched_method = "標準偵測"  # 預設值，避免未定義錯誤
             matched_section, matched_keyword = extract_reference_section_from_bottom(paragraphs)
             # fallback：如果沒找到任何符合的關鍵字段落，就直接用整份處理
             if not matched_section:
-                st.warning(f"⚠️ 檔案 {uploaded_file.name} 未偵測到參考文獻標題，將嘗試以全文處理。")
-                matched_section = paragraphs
+                st.warning(f"⚠️ 檔案 {uploaded_file.name} 原方法未找到參考文獻區段，嘗試使用改進版識別...")
+                matched_section, matched_keyword, matched_method = extract_reference_section_improved(paragraphs)
+
+                if matched_section:
+                    st.info(f"✅ 改進版成功識別參考文獻段落（方法：{matched_method}，識別關鍵：{matched_keyword}）")
+                else:
+                    st.warning(f"❌ 改進版仍無法識別參考文獻區段，將嘗試以全文處理。")
+                    matched_section = paragraphs
+                    matched_keyword = "全文處理"
         else:
             matched_section = paragraphs
 
         with st.expander("擷取到的參考文獻段落（供人工檢查）"):
-            if matched_keyword:
-                st.markdown(f"🔍 偵測到參考文獻起點關鍵字為：**{matched_keyword}**")
-            else:
-                st.markdown("🔍 未偵測到特定關鍵字，改以整份文件處理。")
+                if matched_keyword != "全文處理":
+                    st.markdown(f"參考文獻段落偵測方式：**{matched_method}**")
+                    st.markdown(f"起始關鍵段落：**{matched_keyword}**")
+                else:
+                    st.markdown("🔍 未能明確偵測到參考文獻段落，改以整份文件處理。")
 
-            for i, para in enumerate(matched_section, 1):
-                st.markdown(f"**{i}.** {para}")
+                for i, para in enumerate(matched_section, 1):
+                    st.markdown(f"**{i}.** {para}")
 
         
         # 合併 PDF 分段參考文獻（使用統一的「開頭合併法」）
