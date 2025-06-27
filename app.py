@@ -155,13 +155,9 @@ def extract_paragraphs_from_pdf(file):
 # ========== 萃取參考文獻 ==========
 def extract_reference_section_from_bottom(paragraphs, start_keywords=None):
     """
-    從底部往上找出真正的參考文獻區段起點，避免誤判正文中的 reference 詞彙。
-    強化條件：
-    - 該段落長度 ≤ 30 字
-    - 不包含句點、逗號等標點符號
-    - 精確比對常見參考文獻章節名稱（中英文）
+    從底部往上找出真正的參考文獻區段起點，並回傳關鍵字來源
+    回傳格式：matched_section, matched_keyword
     """
-
     if start_keywords is None:
         start_keywords = [
             "參考文獻", "references", "reference",
@@ -177,9 +173,9 @@ def extract_reference_section_from_bottom(paragraphs, start_keywords=None):
 
         normalized = para.lower()
         if normalized in start_keywords:
-            return paragraphs[i + 1:]
+            return paragraphs[i + 1:], para  # ✅ 回傳段落和關鍵字本身
 
-    return []  # 找不到合適的參考文獻章節
+    return [], None
 
 
 # ========== 偵測格式 ==========
@@ -195,33 +191,79 @@ def detect_reference_style(ref_text):
 # ========== 段落合併器（PDF 專用，根據參考文獻開頭切分） ==========
 
 def is_reference_head(para):
-    """判斷是否為一條參考文獻的開頭（APA 或 IEEE）"""
-    # APA 風格: 作者 (年份)
-    if re.match(r".+\(\d{4}\)", para):
+    """
+    判斷段落是否為參考文獻開頭（APA 或 IEEE）
+    APA 條件：段落中出現 (XXXX). 且後面為 . 空白
+    IEEE 條件：開頭為 [數字]
+    """
+
+    # APA：允許任何 4 位數字或 n.d.，但後面必須是 . 空白（符合 APA 格式）
+    if re.search(r"\((\d{4}[a-c]?|n\.d\.)\)\.\s", para, re.IGNORECASE):
         return True
-    # IEEE 風格: 開頭為 [數字]
+
+    # IEEE：開頭為 [數字]
     if re.match(r"^\[\d+\]", para):
         return True
+
     return False
 
 def merge_references_by_heads(paragraphs):
-    """根據參考文獻的開頭段落，合併成完整的一條參考文獻"""
     merged = []
-    current = ""
+
     for para in paragraphs:
-        if is_reference_head(para):
-            if current:
-                merged.append(current.strip())
-            current = para
+        # 若同一段中有多個 APA 年份出現，先嘗試分段
+        if len(re.findall(r'\(\d{4}[a-c]?\)', para)) >= 2:
+            sub_refs = split_multiple_apa_in_paragraph(para)
+            
+            # ✅ 既然是我們切出來的，就全部視為獨立文獻
+            merged.extend([s.strip() for s in sub_refs if s.strip()])
+
         else:
-            current += " " + para
-    if current:
-        merged.append(current.strip())
+            # 只有一篇時，再正常依據開頭進行合併判斷
+            if is_reference_head(para):
+                merged.append(para.strip())
+            else:
+                if merged:
+                    merged[-1] += " " + para.strip()
+                else:
+                    merged.append(para.strip())
+
     return merged
 
 
+#合併錯誤的檢查 可能會需二次分割
+def split_multiple_apa_in_paragraph(paragraph):
+    """
+    改良版：從出現第 2 筆 (年份) 起，往前尋找 `X. (年份)` 的開頭作為切分點。
+    具體做法：搜尋 `. (199X)` 前一個字元，作為切點，確保新段落從作者縮寫開始。
+    """
+    matches = list(re.finditer(r'\((\d{4}[a-z]?|n\.d\.)\)\.', paragraph, re.IGNORECASE))
+    if len(matches) < 2:
+        return [paragraph]
 
+    split_indices = []
 
+    for i in range(1, len(matches)):
+        year_pos = matches[i].start()
+        # 回溯至 ". " 再往前 1 個字元
+        lookback_window = paragraph[max(0, year_pos - 10):year_pos]
+        dot_space_match = re.search(r'([A-Z]\.)\s$', lookback_window)
+        if dot_space_match:
+            cut_offset = year_pos - (len(lookback_window) - dot_space_match.start(1))
+            split_indices.append(cut_offset)
+        else:
+            # fallback：如找不到，仍以年份起點為切點
+            split_indices.append(year_pos)
+
+    # 實際分段
+    segments = []
+    start = 0
+    for idx in split_indices:
+        segments.append(paragraph[start:idx].strip())
+        start = idx
+    segments.append(paragraph[start:].strip())
+
+    return [s for s in segments if s]
 
 
 
@@ -295,17 +337,23 @@ if uploaded_files and start_button:
         # 偵測參考文獻段落
         matched_section = []
         if not skip_section_detection:
-            matched_section = extract_reference_section_from_bottom(paragraphs)
-            # 🛠️ fallback：如果沒找到任何符合的關鍵字段落，就直接用整份處理
+            matched_section, matched_keyword = extract_reference_section_from_bottom(paragraphs)
+            # fallback：如果沒找到任何符合的關鍵字段落，就直接用整份處理
             if not matched_section:
                 st.warning(f"⚠️ 檔案 {uploaded_file.name} 未偵測到參考文獻標題，將嘗試以全文處理。")
                 matched_section = paragraphs
         else:
             matched_section = paragraphs
 
-        with st.expander("📌 擷取到的參考文獻段落（供人工檢查）"):
+        with st.expander("擷取到的參考文獻段落（供人工檢查）"):
+            if matched_keyword:
+                st.markdown(f"🔍 偵測到參考文獻起點關鍵字為：**{matched_keyword}**")
+            else:
+                st.markdown("🔍 未偵測到特定關鍵字，改以整份文件處理。")
+
             for i, para in enumerate(matched_section, 1):
                 st.markdown(f"**{i}.** {para}")
+
         
         # 合併 PDF 分段參考文獻（使用統一的「開頭合併法」）
         if file_ext == "pdf":
@@ -318,11 +366,59 @@ if uploaded_files and start_button:
 
         # 改為使用 merged_references 處理每筆文獻
         title_pairs = []
-        for ref in merged_references:
-            style = detect_reference_style(ref)
-            title = extract_title(ref, style)
-            if title:
-                title_pairs.append((ref, title))
+        with st.expander("逐筆參考文獻解析結果（合併後段落 + 標題 + DOI + 格式）"):
+            ref_index = 1
+            for para in merged_references:
+                # 若同段包含多個 APA 年份，先強制分段處理
+                year_matches = list(re.finditer(r'\(\d{4}[a-c]?\)', para))
+                if len(year_matches) >= 2:
+                    sub_refs = split_multiple_apa_in_paragraph(para)
+                    st.markdown(f"🔍 強制切分段落（原始段落含 {len(year_matches)} 年份）：")
+                    for i, sub_ref in enumerate(sub_refs, 1):
+                        style = detect_reference_style(sub_ref)
+                        title = extract_title(sub_ref, style)
+                        doi = extract_doi(sub_ref)
+
+                        highlights = sub_ref
+                        for match in reversed(list(re.finditer(r'\(\d{4}[a-c]?\)', sub_ref))):
+                            start, end = match.span()
+                            highlights = highlights[:start] + "**" + highlights[start:end] + "**" + highlights[end:]
+
+
+                        st.markdown(f"**{ref_index}.**")
+                        st.write(highlights)
+                        st.markdown(f"""
+                        • 📰 **擷取標題**：{title if title else "❌ 無法擷取"}  
+                        • 🔍 **擷取 DOI**：{doi if doi else "❌ 無 DOI"}  
+                        • 🏷️ **偵測風格**：`{style}`  
+                        • 📅 **年份出現次數**：{len(re.findall(r'\(\d{4}[a-c]?\)', sub_ref))}  
+                        """)
+                        if title:
+                            title_pairs.append((sub_ref, title))
+                        ref_index += 1
+                else:
+                    ref = para
+                    style = detect_reference_style(ref)
+                    title = extract_title(ref, style)
+                    doi = extract_doi(ref)
+
+                    highlights = ref
+                    for match in reversed(list(re.finditer(r'\(\d{4}[a-c]?\)', ref))):
+                        start, end = match.span()
+                        highlights = highlights[:start] + "**" + highlights[start:end] + "**" + highlights[end:]
+
+                    st.markdown(f"**{ref_index}.**")
+                    st.write(highlights)
+                    st.markdown(f"""
+                    • 📰 **擷取標題**：{title if title else "❌ 無法擷取"}  
+                    • 🔍 **擷取 DOI**：{doi if doi else "❌ 無 DOI"}  
+                    • 🏷️ **偵測風格**：`{style}`  
+                    • 📅 **年份出現次數**：{len(re.findall(r'\((\d{4}[a-c]?|n\.d\.)\)', ref, re.IGNORECASE))}  
+                    """)
+                    if title:
+                        title_pairs.append((ref, title))
+                    ref_index += 1
+
 
 
         # 查詢處理
