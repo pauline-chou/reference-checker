@@ -98,36 +98,44 @@ def search_scopus_by_title(title):
 # ========== Serpapi 查詢 ==========
 def search_scholar_by_title(title, api_key, threshold=0.90):
     search_url = f"https://scholar.google.com/scholar?q={urllib.parse.quote(title)}"
-
-    # 呼叫 SerpAPI
     params = {
         "engine": "google_scholar",
         "q": title,
         "api_key": api_key,
         "num": 3
     }
-    results = GoogleSearch(params).get_dict()
-    organic = results.get("organic_results", [])
 
-    if not organic:
+    try:
+        results = GoogleSearch(params).get_dict()
+
+        if "error" in results:
+            error_msg = results["error"]
+            st.session_state["serpapi_error"] = error_msg
+            if any(keyword in error_msg.lower() for keyword in ["exceed", "limit", "run out", "searches"]):
+                st.session_state["serpapi_exceeded"] = True
+            return search_url, "no_result"
+
+
+        organic = results.get("organic_results", [])
+        if not organic:
+            return search_url, "no_result"
+
+        cleaned_query = clean_title(title)
+        for result in organic:
+            result_title = result.get("title", "")
+            cleaned_result = clean_title(result_title)
+            if cleaned_query == cleaned_result:
+                return search_url, "match"
+            if SequenceMatcher(None, cleaned_query, cleaned_result).ratio() >= threshold:
+                return search_url, "similar"
+
         return search_url, "no_result"
+
+    except Exception as e:
+        st.session_state["serpapi_error"] = f"API 查詢錯誤：{e}"
+        return search_url, "no_result"
+
     
-    cleaned_query = clean_title(title)
-    
-    for result in organic:
-        result_title = result.get("title", "")
-        cleaned_result = clean_title(result_title)
-        
-        # 僅當標題「清洗後完全一致」才算 match
-        if cleaned_query == cleaned_result:
-            return search_url, "match"
-
-        similarity = SequenceMatcher(None, cleaned_query, cleaned_result).ratio()
-        if similarity >= threshold:
-            return search_url, "similar"
-
-    return search_url, "no_result"
-
 # ========== Word 處理 ==========
 def extract_paragraphs_from_docx(file):
     # 使用 BytesIO 處理 UploadedFile
@@ -145,12 +153,34 @@ def extract_paragraphs_from_pdf(file):
     return paragraphs
 
 # ========== 萃取參考文獻 ==========
-def extract_reference_section_from_bottom(paragraphs, start_keywords=["參考文獻", "References", "Reference"]):
-    for i in reversed(range(len(paragraphs))):  # 從底部往上找
-        for keyword in start_keywords:
-            if keyword.lower() in paragraphs[i].lower():
-                return paragraphs[i + 1:]
-    return []  # 找不到就回傳空列表
+def extract_reference_section_from_bottom(paragraphs, start_keywords=None):
+    """
+    從底部往上找出真正的參考文獻區段起點，避免誤判正文中的 reference 詞彙。
+    強化條件：
+    - 該段落長度 ≤ 30 字
+    - 不包含句點、逗號等標點符號
+    - 精確比對常見參考文獻章節名稱（中英文）
+    """
+
+    if start_keywords is None:
+        start_keywords = [
+            "參考文獻", "references", "reference",
+            "bibliography", "works cited", "literature cited"
+        ]
+
+    for i in reversed(range(len(paragraphs))):
+        para = paragraphs[i].strip()
+
+        # 跳過太長或包含標點的段落（可能是正文）
+        if len(para) > 30 or re.search(r'[.,;:]', para):
+            continue
+
+        normalized = para.lower()
+        if normalized in start_keywords:
+            return paragraphs[i + 1:]
+
+    return []  # 找不到合適的參考文獻章節
+
 
 # ========== 偵測格式 ==========
 def detect_reference_style(ref_text):
@@ -158,7 +188,7 @@ def detect_reference_style(ref_text):
     if re.match(r'^\[\d+\]', ref_text) or '"' in ref_text:
         return "IEEE"
     # APA 常見結構：作者（西元年）。標題。
-    if re.search(r'\(\d{4}\)\.', ref_text) or re.search(r'，\d{4}。', ref_text):
+    if re.search(r'\((\d{4}[a-c]?|n\.d\.)\)\.', ref_text, re.IGNORECASE):
         return "APA"
     return "Unknown"
 
@@ -198,9 +228,9 @@ def merge_references_by_heads(paragraphs):
 # ========== 擷取標題 ==========
 def extract_title(ref_text, style):
     if style == "APA":
-        match = re.search(r'\(\d{4}\)\.\s(.+?)(?:\.\s|$)', ref_text)
+        match = re.search(r'\((\d{4}[a-c]?|n\.d\.)\)\.\s(.+?)(?:\.\s|$)', ref_text, re.IGNORECASE)
         if match:
-            return match.group(1).strip()
+            return match.group(2).strip()
     elif style == "IEEE":
         matches = re.findall(r'"([^"]+)"', ref_text)
         if matches:
@@ -244,7 +274,7 @@ if uploaded_files and start_button:
 
     for uploaded_file in uploaded_files:
         file_ext = uploaded_file.name.split(".")[-1].lower()
-        st.markdown(f"📄 處理檔案： `{uploaded_file.name}`")
+        st.markdown(f"📄 處理檔案： {uploaded_file.name}")
 
         # 顯示獨立進度條（要寫在檔案 for 迴圈內）
         file_progress = st.progress(0.0)
@@ -258,7 +288,7 @@ if uploaded_files and start_button:
             skip_section_detection = False
             
         else:
-            st.warning(f"⚠️ 檔案 `{uploaded_file.name}` 格式不支援，將略過。")
+            st.warning(f"⚠️ 檔案 {uploaded_file.name} 格式不支援，將略過。")
             continue
 
 
@@ -268,7 +298,7 @@ if uploaded_files and start_button:
             matched_section = extract_reference_section_from_bottom(paragraphs)
             # 🛠️ fallback：如果沒找到任何符合的關鍵字段落，就直接用整份處理
             if not matched_section:
-                st.warning(f"⚠️ 檔案 `{uploaded_file.name}` 未偵測到參考文獻標題，將嘗試以全文處理。")
+                st.warning(f"⚠️ 檔案 {uploaded_file.name} 未偵測到參考文獻標題，將嘗試以全文處理。")
                 matched_section = paragraphs
         else:
             matched_section = paragraphs
@@ -340,7 +370,11 @@ if uploaded_files and start_button:
 
     st.session_state.query_results = all_results
 
-
+# 如果 SerpAPI 用量已超過，顯示一次性提示
+if st.session_state.get("serpapi_exceeded"):
+    st.warning("⚠️ SerpAPI 查詢額度已用完，因此部分結果可能無法從 Google Scholar 查得，請稍後再試或確認 API 使用狀況。")
+elif st.session_state.get("serpapi_error"):
+    st.warning(f"⚠️ Google Scholar 查詢時發生錯誤：{st.session_state['serpapi_error']}")
 
 
 
@@ -361,7 +395,7 @@ if st.session_state.query_results:
             scopus_hits = result["scopus_hits"]
             scholar_hits = result["scholar_hits"]
 
-            st.markdown(f"📄 檔案名稱： `{uploaded_filename}`")
+            st.markdown(f"📄 檔案名稱： {uploaded_filename}")
             matched_count = len(crossref_doi_hits) + len(scopus_hits) + len(scholar_hits)
             hit_tab, similar_tab, miss_tab = st.tabs([
                 f"🟢 命中結果（{matched_count}）",
