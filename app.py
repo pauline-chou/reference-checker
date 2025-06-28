@@ -10,6 +10,7 @@ from io import StringIO
 from serpapi import GoogleSearch
 import fitz 
 import re
+import unicodedata
 
 
 # ========== API Key 管理 ==========
@@ -66,28 +67,23 @@ def search_crossref_by_doi(doi):
 
 # ========== 清洗標題 ==========
 def clean_title(text):
-    import unicodedata
-    import re
-
-    # 1. 移除所有 Unicode dash 類符號（含普通 -）
+    # 移除 dash 類符號
     dash_variants = ["-", "–", "—", "−", "‑", "‐"]
     for d in dash_variants:
         text = text.replace(d, "")
 
-    # 2. 標準化字元：統一全形、異體符號
+    # 標準化字符（例如全形轉半形）
     text = unicodedata.normalize('NFKC', text)
 
-    # 3. 統一雙引號與單引號
-    text = re.sub(r'[“”‘’]', '"', text)
+    # 過濾掉標點符號、符號類別（不刪文字！）
+    cleaned = []
+    for ch in text:
+        if unicodedata.category(ch)[0] in ("L", "N", "Z"):  # L=Letter, N=Number, Z=Space
+            cleaned.append(ch.lower())
+        # else: 跳過標點與符號
 
-    # 4. 清除不常見符號，只保留常用英文標點與文字
-    text = text.lower()
-    text = re.sub(r'[^a-z0-9\s:.,\"()\']', '', text)
-
-    # 5. 空白合併處理
-    text = re.sub(r'\s+', ' ', text)
-
-    return text.strip()
+    # 統一空白
+    return re.sub(r'\s+', ' ', ''.join(cleaned)).strip()
 
 # ========== Scopus 查詢 ==========
 def search_scopus_by_title(title):
