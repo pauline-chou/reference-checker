@@ -66,13 +66,28 @@ def search_crossref_by_doi(doi):
 
 # ========== 清洗標題 ==========
 def clean_title(text):
-    text = text.lower().strip()
+    import unicodedata
+    import re
+
+    # 1. 移除所有 Unicode dash 類符號（含普通 -）
+    dash_variants = ["-", "–", "—", "−", "‑", "‐"]
+    for d in dash_variants:
+        text = text.replace(d, "")
+
+    # 2. 標準化字元：統一全形、異體符號
+    text = unicodedata.normalize('NFKC', text)
+
+    # 3. 統一雙引號與單引號
     text = re.sub(r'[“”‘’]', '"', text)
-    text = re.sub(r'[:：]{2,}', ':', text)
-    text = re.sub(r'[^a-z0-9\s:.,\\-]', '', text)
+
+    # 4. 清除不常見符號，只保留常用英文標點與文字
+    text = text.lower()
+    text = re.sub(r'[^a-z0-9\s:.,\"()\']', '', text)
+
+    # 5. 空白合併處理
     text = re.sub(r'\s+', ' ', text)
-    text = text.rstrip('.,:;- ')
-    return text
+
+    return text.strip()
 
 # ========== Scopus 查詢 ==========
 def search_scopus_by_title(title):
@@ -133,6 +148,36 @@ def search_scholar_by_title(title, api_key, threshold=0.90):
 
     except Exception as e:
         st.session_state["serpapi_error"] = f"API 查詢錯誤：{e}"
+        return search_url, "no_result"
+
+#補救搜尋
+def search_scholar_by_ref_text(ref_text, api_key):
+    search_url = f"https://scholar.google.com/scholar?q={urllib.parse.quote(ref_text)}"
+    params = {
+        "engine": "google_scholar",
+        "q": ref_text,
+        "api_key": api_key,
+        "num": 1  # 只抓第一筆就好
+    }
+
+    try:
+        results = GoogleSearch(params).get_dict()
+
+        organic = results.get("organic_results", [])
+        if not organic:
+            return search_url, "no_result"
+
+        first_title = organic[0].get("title", "")
+        cleaned_ref = clean_title(ref_text)
+        cleaned_first = clean_title(first_title)
+
+        # 改為雙向包含
+        if cleaned_first in cleaned_ref or cleaned_ref in cleaned_first:
+            return search_url, "remedial"
+
+        return search_url, "no_result"
+
+    except Exception as e:
         return search_url, "no_result"
 
     
@@ -532,7 +577,9 @@ if uploaded_files and start_button:
         scopus_hits = {}
         scholar_hits = {}
         scholar_similar = {}
+        scholar_remedial = {}
         not_found = []
+        
 
         for i, (ref, title) in enumerate(title_pairs, 1):
             doi = extract_doi(ref)
@@ -553,7 +600,12 @@ if uploaded_files and start_button:
                 elif gs_type == "similar":
                     scholar_similar[ref] = gs_url
                 else:
-                    not_found.append(ref)
+                    # 加入補救查詢
+                    remedial_url, remedial_type = search_scholar_by_ref_text(ref, SERPAPI_KEY)
+                    if remedial_type == "remedial":
+                        scholar_remedial[ref] = remedial_url
+                    else:
+                        not_found.append(ref)
 
             file_progress.progress(i / len(title_pairs))
 
@@ -564,6 +616,7 @@ if uploaded_files and start_button:
             "scopus_hits": scopus_hits,
             "scholar_hits": scholar_hits,
             "scholar_similar": scholar_similar,
+            "scholar_remedial": scholar_remedial,
             "not_found": not_found,
             "report_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         }
@@ -588,17 +641,19 @@ if st.session_state.query_results:
         st.markdown("---")
         st.subheader("📊 查詢結果分類")
         for result in st.session_state.query_results:
-            not_found = result["not_found"]
-            title_pairs = result["title_pairs"]
-            crossref_doi_hits = result["crossref_doi_hits"]
-            scholar_similar = result["scholar_similar"]
-            uploaded_filename = result["filename"]
-            report_time = result["report_time"]
-            scopus_hits = result["scopus_hits"]
-            scholar_hits = result["scholar_hits"]
+            not_found = result.get("not_found", [])
+            title_pairs = result.get("title_pairs", [])
+            crossref_doi_hits = result.get("crossref_doi_hits", {})
+            scholar_similar = result.get("scholar_similar", {})
+            scholar_remedial = result.get("scholar_remedial", {})
+            uploaded_filename = result.get("filename", "未知檔案")
+            report_time = result.get("report_time", "未記錄")
+            scopus_hits = result.get("scopus_hits", {})
+            scholar_hits = result.get("scholar_hits", {})
+            
 
             st.markdown(f"📄 檔案名稱： {uploaded_filename}")
-            matched_count = len(crossref_doi_hits) + len(scopus_hits) + len(scholar_hits)
+            matched_count = len(crossref_doi_hits) + len(scopus_hits) + len(scholar_hits) + len(scholar_remedial)
             hit_tab, similar_tab, miss_tab = st.tabs([
                 f"🟢 命中結果（{matched_count}）",
                 f"🟡 Google Scholar 類似標題（{len(scholar_similar)}）",
@@ -620,7 +675,11 @@ if st.session_state.query_results:
                     with st.expander(f"\U0001F7E2 Google Scholar 標題命中（{len(scholar_hits)}）"):
                         for i, (title, url) in enumerate(scholar_hits.items(), 1):
                             st.markdown(f"{i}. {title}  \n🔗 [Scholar 連結]({url})", unsafe_allow_html=True)
-
+                if scholar_remedial:
+                    with st.expander(f"\U0001F7E2 Google Scholar 補救命中（{len(scholar_remedial)}）"):
+                        for i, (title, url) in enumerate(scholar_remedial.items(), 1):
+                            st.markdown(f"{i}. {title}  \n🔗 [Scholar 連結]({url})", unsafe_allow_html=True)
+                
                 if not (crossref_doi_hits or scopus_hits or scholar_hits):
                     st.info("沒有命中任何參考文獻。")
 
@@ -657,12 +716,15 @@ if st.session_state.query_results:
                     export_data.append([filename, ref, "標題命中（Google Scholar）", result["scholar_hits"][ref]])
                 elif ref in result["scholar_similar"]:
                     export_data.append([filename, ref, "Google Scholar 類似標題", result["scholar_similar"][ref]])
+                elif ref in result.get("scholar_remedial", {}):
+                    export_data.append([filename, ref, "Google Scholar 補救命中", result["scholar_remedial"][ref]])
                 elif ref in result["not_found"]:
                     scholar_url = f"https://scholar.google.com/scholar?q={urllib.parse.quote(ref)}"
                     export_data.append([filename, ref, "查無結果", scholar_url])
         total_refs = sum(len(r["title_pairs"]) for r in st.session_state.query_results)
         matched_exact = sum(len(r["crossref_doi_hits"]) + len(r["scopus_hits"]) + len(r["scholar_hits"]) for r in st.session_state.query_results)
         matched_similar = sum(len(r["scholar_similar"]) for r in st.session_state.query_results)
+        matched_remedial = sum(len(r.get("scholar_remedial", {})) for r in st.session_state.query_results)
         unmatched = sum(len(r["not_found"]) for r in st.session_state.query_results)
 
         header = StringIO()
@@ -685,6 +747,7 @@ if st.session_state.query_results:
         matched_crossref = sum(len(r["crossref_doi_hits"]) for r in st.session_state.query_results)
         matched_scopus = sum(len(r["scopus_hits"]) for r in st.session_state.query_results)
         matched_scholar = sum(len(r["scholar_hits"]) for r in st.session_state.query_results)
+        matched_remedial = sum(len(r.get("scholar_remedial", {})) for r in st.session_state.query_results)
         matched_similar = sum(len(r["scholar_similar"]) for r in st.session_state.query_results)
         matched_notfound = sum(len(r["not_found"]) for r in st.session_state.query_results)
 
@@ -695,6 +758,7 @@ if st.session_state.query_results:
         - {matched_crossref} 篇為「Crossref 有 DOI 資訊」
         - {matched_scopus} 篇為「標題命中（Scopus）」
         - {matched_scholar} 篇為「標題命中（Google Scholar）」
+        - {matched_remedial} 篇為「Google Scholar 補救命中」
         - {matched_similar} 篇為「Google Scholar 類似標題」
         - {matched_notfound} 篇為「查無結果」
         """)
