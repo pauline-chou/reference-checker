@@ -126,10 +126,7 @@ def search_scholar_by_title(title, api_key, threshold=0.90):
         if "error" in results:
             error_msg = results["error"]
             st.session_state["serpapi_error"] = error_msg
-            if any(keyword in error_msg.lower() for keyword in ["exceed", "limit", "run out", "searches"]):
-                st.session_state["serpapi_exceeded"] = True
-            return search_url, "no_result"
-
+            return search_url, "error"
 
         organic = results.get("organic_results", [])
         if not organic:
@@ -139,6 +136,10 @@ def search_scholar_by_title(title, api_key, threshold=0.90):
         for result in organic:
             result_title = result.get("title", "")
             cleaned_result = clean_title(result_title)
+
+            if not cleaned_query or not cleaned_result:
+                continue
+
             if cleaned_query == cleaned_result:
                 return search_url, "match"
             if SequenceMatcher(None, cleaned_query, cleaned_result).ratio() >= threshold:
@@ -148,7 +149,8 @@ def search_scholar_by_title(title, api_key, threshold=0.90):
 
     except Exception as e:
         st.session_state["serpapi_error"] = f"API 查詢錯誤：{e}"
-        return search_url, "no_result"
+        return search_url, "error"
+
 
 #補救搜尋
 def search_scholar_by_ref_text(ref_text, api_key):
@@ -325,8 +327,8 @@ def detect_reference_style(ref_text):
     # IEEE 通常開頭是 [1]，或含有英文引號 "標題"
     if re.match(r'^\[\d+\]', ref_text) or '"' in ref_text:
         return "IEEE"
-    # APA 常見結構：作者（西元年）。標題。
-    if re.search(r'\((\d{4}[a-c]?|n\.d\.)\)\.', ref_text, re.IGNORECASE):
+    # APA 常見結構：作者（西元年）。標題。 支援全形或半形括號與句點混用
+    if re.search(r'[（(](\d{4}[a-c]?|n\.d\.)[）)][。\.]', ref_text, re.IGNORECASE):
         return "APA"
     return "Unknown"
 
@@ -340,7 +342,7 @@ def is_reference_head(para):
     """
 
     # APA：允許任何 4 位數字或 n.d.，但後面必須是 . 空白（符合 APA 格式）
-    if re.search(r"\((\d{4}[a-c]?|n\.d\.)\)\.\s", para, re.IGNORECASE):
+    if re.search(r"[（(](\d{4}[a-c]?|n\.d\.)[）)][。\.]\s", para, re.IGNORECASE):
         return True
 
     # IEEE：開頭為 [數字]
@@ -379,9 +381,10 @@ def split_multiple_apa_in_paragraph(paragraph):
     改良版：從出現第 2 筆 (年份) 起，往前尋找 `X. (年份)` 的開頭作為切分點。
     具體做法：搜尋 `. (199X)` 前一個字元，作為切點，確保新段落從作者縮寫開始。
     """
-    matches = list(re.finditer(r'\((\d{4}[a-z]?|n\.d\.)\)\.', paragraph, re.IGNORECASE))
+    matches = list(re.finditer(r'[（(](\d{4}[a-z]?|n\.d\.)[）)][。\.]', paragraph, re.IGNORECASE))
     if len(matches) < 2:
         return [paragraph]
+    
 
     split_indices = []
 
@@ -389,7 +392,7 @@ def split_multiple_apa_in_paragraph(paragraph):
         year_pos = matches[i].start()
         # 回溯至 ". " 再往前 1 個字元
         lookback_window = paragraph[max(0, year_pos - 10):year_pos]
-        dot_space_match = re.search(r'([A-Z]\.)\s$', lookback_window)
+        dot_space_match = re.search(r'([A-Z]\.)\s*$', lookback_window)
         if dot_space_match:
             cut_offset = year_pos - (len(lookback_window) - dot_space_match.start(1))
             split_indices.append(cut_offset)
@@ -412,17 +415,17 @@ def split_multiple_apa_in_paragraph(paragraph):
 # ========== 擷取標題 ==========
 def extract_title(ref_text, style):
     if style == "APA":
-        match = re.search(r'\((\d{4}[a-c]?|n\.d\.)\)\.\s(.+?)(?:\.\s|$)', ref_text, re.IGNORECASE)
+        # 支援中英文括號 + 中英文句點混用
+        match = re.search(r'[（(](\d{4}[a-c]?|n\.d\.)[）)][。\.]\s*(.+?)(?:[。\.]\s*|$)', ref_text, re.IGNORECASE)
         if match:
             return match.group(2).strip()
     elif style == "IEEE":
         matches = re.findall(r'"([^"]+)"', ref_text)
         if matches:
             return max(matches, key=len).strip().rstrip(",.")
-        else:
-            fallback = re.search(r'(?<!et al)([A-Z][^,.]+[a-zA-Z])[,\.]', ref_text)
-            if fallback:
-                return fallback.group(1).strip(" ,.")
+        fallback = re.search(r'(?<!et al)([A-Z][^,.]+[a-zA-Z])[,\.]', ref_text)
+        if fallback:
+            return fallback.group(1).strip(" ,.")
     return None
 
 # ========== Streamlit UI ==========
@@ -462,6 +465,9 @@ if uploaded_files and start_button:
 
         # 顯示獨立進度條（要寫在檔案 for 迴圈內）
         file_progress = st.progress(0.0)
+
+        scholar_logs = []
+
 
         # 檔案解析
         if file_ext == "docx":
@@ -595,19 +601,33 @@ if uploaded_files and start_button:
                 scopus_hits[ref] = url
             else:
                 gs_url, gs_type = search_scholar_by_title(title, SERPAPI_KEY)
+                scholar_logs.append(f"Google Scholar 回傳類型：{gs_type} / 標題：{title}")
                 if gs_type == "match":
-                    scholar_hits[ref] = gs_url
+                    if title and title.strip():  # 加一層保險
+                        scholar_hits[ref] = gs_url
+                    else:
+                        not_found.append(ref) # 收集查詢紀錄
                 elif gs_type == "similar":
                     scholar_similar[ref] = gs_url
+                elif gs_type == "error":
+                    # Scholar 查詢本身失敗，不再補救，直接列入查無結果
+                    not_found.append(ref)
                 else:
                     # 加入補救查詢
                     remedial_url, remedial_type = search_scholar_by_ref_text(ref, SERPAPI_KEY)
+                    scholar_logs.append(f"Google Scholar 回傳類型：remedial_{remedial_type} / 標題：{title}")  # 收集補救結果
+
                     if remedial_type == "remedial":
                         scholar_remedial[ref] = remedial_url
                     else:
                         not_found.append(ref)
 
             file_progress.progress(i / len(title_pairs))
+
+    if scholar_logs:
+        with st.expander("Google Scholar 查詢過程紀錄"):
+            for line in scholar_logs:
+                st.text(line)
 
         file_results = {
             "filename": uploaded_file.name,
