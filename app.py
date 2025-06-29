@@ -85,6 +85,28 @@ def clean_title(text):
     # 統一空白
     return re.sub(r'\s+', ' ', ''.join(cleaned)).strip()
 
+# 專門給補救命中的清洗
+def clean_title_for_remedial(text):
+    """給補救查詢用的清洗：去掉單獨數字、標點、全形轉半形等"""
+    # 標準化字元（全形轉半形）
+    text = unicodedata.normalize('NFKC', text)
+
+    # 移除 dash 類符號
+    dash_variants = ["-", "–", "—", "−", "‑", "‐"]
+    for d in dash_variants:
+        text = text.replace(d, "")
+
+    # 移除單獨的數字詞（如頁碼、卷號）
+    text = re.sub(r'\b\d+\b', '', text)
+
+    # 保留字母、數字、空白
+    cleaned = []
+    for ch in text:
+        if unicodedata.category(ch)[0] in ("L", "N", "Z"):  # L=Letter, N=Number, Z=Space
+            cleaned.append(ch.lower())
+
+    return re.sub(r'\s+', ' ', ''.join(cleaned)).strip()
+
 # ========== Scopus 查詢 ==========
 def search_scopus_by_title(title):
     base_url = "https://api.elsevier.com/content/search/scopus"
@@ -155,21 +177,21 @@ def search_scholar_by_ref_text(ref_text, api_key):
         "engine": "google_scholar",
         "q": ref_text,
         "api_key": api_key,
-        "num": 1  # 只抓第一筆就好
+        "num": 1
     }
 
     try:
         results = GoogleSearch(params).get_dict()
-
         organic = results.get("organic_results", [])
         if not organic:
             return search_url, "no_result"
 
         first_title = organic[0].get("title", "")
-        cleaned_ref = clean_title(ref_text)
-        cleaned_first = clean_title(first_title)
 
-        # 改為雙向包含
+        # 使用乾淨版清洗（不影響主流程）
+        cleaned_ref = clean_title_for_remedial(ref_text)
+        cleaned_first = clean_title_for_remedial(first_title)
+
         if cleaned_first in cleaned_ref or cleaned_ref in cleaned_first:
             return search_url, "remedial"
 
@@ -451,14 +473,15 @@ def split_multiple_apa_in_paragraph(paragraph):
 # ========== 擷取標題 ==========
 def extract_title(ref_text, style):
     if style == "APA":
-        # 支援中英文括號 + 中英文句點混用
+        # 改進：結尾可以是「.」、「。」或「,」，排除數字之間的逗號或句點
         match = re.search(
-            r'[（(](\d{4}[a-c]?|n\.d\.)[）)][。\.]\s*(.+?)(?:(?<!\d)\.(?!\d)|[。]\s*|$)', 
-            ref_text, 
+            r'[（(](\d{4}[a-c]?|n\.d\.)[）)][。\.]\s*(.+?)(?:(?<!\d)[.,。](?!\d)|$)',
+            ref_text,
             re.IGNORECASE
         )
         if match:
-            return match.group(2).strip()
+            return match.group(2).strip(" ,.")  # 去除結尾的逗號或句號
+
     elif style == "IEEE":
         matches = re.findall(r'"([^"]+)"', ref_text)
         if matches:
@@ -466,13 +489,17 @@ def extract_title(ref_text, style):
         fallback = re.search(r'(?<!et al)([A-Z][^,.]+[a-zA-Z])[,\.]', ref_text)
         if fallback:
             return fallback.group(1).strip(" ,.")
+
     elif style == "APA_LIKE":
-        # 找 APA_LIKE 的年份，例如 , 2023. 或 ，2023。等，排除 2.0 類型中斷
-        match = re.search(r'[,，.。]\s*\d{4}[.。]\s*(.*?)(?:(?<!\d)[.。](?!\d)|$)', ref_text)
+        match = re.search(
+            r'[,，.。]\s*\d{4}[.。]\s*(.*?)(?:(?<!\d)[.,。](?!\d)|$)',
+            ref_text
+        )
         if match:
-            return match.group(1).strip()
+            return match.group(1).strip(" ,.")
         
     return None
+
 
 # ========== 分析單筆參考文獻用（含 APA_LIKE 年份統計） ==========
 def analyze_single_reference(ref_text, ref_index):
@@ -558,16 +585,13 @@ if uploaded_files and start_button:
         # 偵測參考文獻段落
         matched_section, matched_keyword = extract_reference_section_from_bottom(paragraphs)
         matched_method = "標準偵測"
+
         if not matched_section:
-            st.warning(f"⚠️ 檔案 {uploaded_file.name} 原方法未找到參考文獻區段，嘗試使用改進版識別...")
             matched_section, matched_keyword, matched_method = extract_reference_section_improved(paragraphs)
-            if matched_section:
-                st.info(f"✅ 改進版成功識別參考文獻段落（方法：{matched_method}，識別關鍵：{matched_keyword}）")
-            else:
-                st.warning("❌ 改進版仍無法識別參考文獻區段，將嘗試以全文處理。")
-                matched_section = paragraphs
-                matched_keyword = "全文處理"
-                matched_method = "全文處理"
+            if not matched_section:
+                st.error(f"❌ 無法識別檔案 {uploaded_file.name} 的參考文獻區段，已跳過該檔案。")
+                continue
+
 
         with st.expander("擷取到的參考文獻段落（供人工檢查）"):
             st.markdown(f"參考文獻段落偵測方式：**{matched_method}**")
