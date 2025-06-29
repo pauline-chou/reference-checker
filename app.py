@@ -326,15 +326,21 @@ def detect_reference_style(ref_text):
     # APA 常見結構：作者（西元年）。標題。 支援全形或半形括號與句點混用
     if re.search(r'[（(](\d{4}[a-c]?|n\.d\.)[）)][。\.]', ref_text, re.IGNORECASE):
         return "APA"
+    # APA_LIKE：逗號或句點 + 年份 + 句點/句號，但需排除前5字含數字的情況
+    matches = re.finditer(r'([,，.。])\s*(\d{4})[.。]', ref_text)
+    for match in matches:
+        start_idx = match.start(2)
+        pre_context = ref_text[max(0, start_idx - 5):start_idx]
+        if not re.search(r'\d', pre_context):  # 前5字元不能有數字
+            return "APA_LIKE"
+        
     return "Unknown"
 
 # ========== 段落合併器（PDF 專用，根據參考文獻開頭切分） ==========
 
 def is_reference_head(para):
     """
-    判斷段落是否為參考文獻開頭（APA 或 IEEE）
-    APA 條件：段落中出現 (XXXX). 且後面為 . 空白
-    IEEE 條件：開頭為 [數字]
+    判斷段落是否為參考文獻開頭（APA、APA_LIKE 或 IEEE）
     """
 
     # APA：允許任何 4 位數字或 n.d.，但後面必須是 . 空白（符合 APA 格式）
@@ -345,21 +351,33 @@ def is_reference_head(para):
     if re.match(r"^\[\d+\]", para):
         return True
 
+    # APA_LIKE：, 或 . 或 ， 後面緊接 4 位數字 + . 或 。 
+    matches = re.finditer(r'([,，.。])\s*(\d{4})[.。]', para)
+    for match in matches:
+        start_idx = match.start(2)
+        pre_context = para[max(0, start_idx - 5):start_idx]
+        if not re.search(r'\d', pre_context):  # 前 5 個字元不能有數字
+            return True
+
     return False
 
 def merge_references_by_heads(paragraphs):
     merged = []
 
     for para in paragraphs:
-        # 若同一段中有多個 APA 年份出現，先嘗試分段
-        if len(re.findall(r'\(\d{4}[a-c]?\)', para)) >= 2:
-            sub_refs = split_multiple_apa_in_paragraph(para)
-            
-            # ✅ 既然是我們切出來的，就全部視為獨立文獻
-            merged.extend([s.strip() for s in sub_refs if s.strip()])
+        # 若包含多個 APA 年份或 APA_LIKE 年份，先嘗試強制切分
+        apa_count = len(re.findall(r'\(\d{4}[a-c]?\)', para))
+        apalike_count = 0
+        for match in re.finditer(r'([,，.。])\s*(\d{4})[.。]', para):
+            year_pos = match.start(2)
+            pre_context = para[max(0, year_pos - 5):year_pos]
+            if not re.search(r'\d', pre_context):
+                apalike_count += 1
 
+        if apa_count >= 2 or apalike_count >= 2:
+            sub_refs = split_multiple_apa_in_paragraph(para)
+            merged.extend([s.strip() for s in sub_refs if s.strip()])
         else:
-            # 只有一篇時，再正常依據開頭進行合併判斷
             if is_reference_head(para):
                 merged.append(para.strip())
             else:
@@ -374,29 +392,37 @@ def merge_references_by_heads(paragraphs):
 #合併錯誤的檢查 可能會需二次分割
 def split_multiple_apa_in_paragraph(paragraph):
     """
-    改良版：從出現第 2 筆 (年份) 起，往前尋找 `X. (年份)` 的開頭作為切分點。
-    具體做法：搜尋 `. (199X)` 前一個字元，作為切點，確保新段落從作者縮寫開始。
+    改良版：從出現第 2 筆 APA 或 APA_LIKE 年份起，每筆往前固定 5 字元切段。
+    - APA： (2020)、(2020a)、(n.d.)
+    - APA_LIKE： , 2020. 或 .2020. 等，且前 5 字元不能含數字
     """
-    matches = list(re.finditer(r'[（(](\d{4}[a-z]?|n\.d\.)[）)][。\.]', paragraph, re.IGNORECASE))
-    if len(matches) < 2:
+
+    # 找 APA 年份位置
+    apa_matches = list(re.finditer(r'[（(](\d{4}[a-z]?|n\.d\.)[）)][。\.]', paragraph, re.IGNORECASE))
+
+    # 找 APA_LIKE 年份位置（要加誤判排除）
+    apalike_matches = []
+    for match in re.finditer(r'([,，.。])\s*(\d{4})[.。]', paragraph):
+        year_pos = match.start(2)
+        pre_context = paragraph[max(0, year_pos - 5):year_pos]
+        if not re.search(r'\d', pre_context):  # 前 5 字元不能含數字
+            apalike_matches.append(match)
+
+    # 統一處理，優先 APA，其次 APA_LIKE
+    if len(apa_matches) >= 2:
+        match_list = apa_matches
+    elif len(apalike_matches) >= 2:
+        match_list = apalike_matches
+    else:
         return [paragraph]
-    
 
+    # 每筆回溯固定 5 個字元切割
     split_indices = []
+    for match in match_list[1:]:  # 從第 2 筆開始切
+        cut_index = max(0, match.start() - 5)
+        split_indices.append(cut_index)
 
-    for i in range(1, len(matches)):
-        year_pos = matches[i].start()
-        # 回溯至 ". " 再往前 1 個字元
-        lookback_window = paragraph[max(0, year_pos - 10):year_pos]
-        dot_space_match = re.search(r'([A-Z]\.)\s*$', lookback_window)
-        if dot_space_match:
-            cut_offset = year_pos - (len(lookback_window) - dot_space_match.start(1))
-            split_indices.append(cut_offset)
-        else:
-            # fallback：如找不到，仍以年份起點為切點
-            split_indices.append(year_pos)
-
-    # 實際分段
+    # 切段
     segments = []
     start = 0
     for idx in split_indices:
@@ -407,12 +433,15 @@ def split_multiple_apa_in_paragraph(paragraph):
     return [s for s in segments if s]
 
 
-
 # ========== 擷取標題 ==========
 def extract_title(ref_text, style):
     if style == "APA":
         # 支援中英文括號 + 中英文句點混用
-        match = re.search(r'[（(](\d{4}[a-c]?|n\.d\.)[）)][。\.]\s*(.+?)(?:[。\.]\s*|$)', ref_text, re.IGNORECASE)
+        match = re.search(
+            r'[（(](\d{4}[a-c]?|n\.d\.)[）)][。\.]\s*(.+?)(?:(?<!\d)\.(?!\d)|[。]\s*|$)', 
+            ref_text, 
+            re.IGNORECASE
+        )
         if match:
             return match.group(2).strip()
     elif style == "IEEE":
@@ -422,7 +451,47 @@ def extract_title(ref_text, style):
         fallback = re.search(r'(?<!et al)([A-Z][^,.]+[a-zA-Z])[,\.]', ref_text)
         if fallback:
             return fallback.group(1).strip(" ,.")
+    elif style == "APA_LIKE":
+        # 找 APA_LIKE 的年份，例如 , 2023. 或 ，2023。等，排除 2.0 類型中斷
+        match = re.search(r'[,，.。]\s*\d{4}[.。]\s*(.*?)(?:(?<!\d)[.。](?!\d)|$)', ref_text)
+        if match:
+            return match.group(1).strip()
+        
     return None
+
+# ========== 分析單筆參考文獻用（含 APA_LIKE 年份統計） ==========
+def analyze_single_reference(ref_text, ref_index):
+    style = detect_reference_style(ref_text)
+    title = extract_title(ref_text, style)
+    doi = extract_doi(ref_text)
+
+    # 高亮顯示 APA/APA_LIKE 年份
+    highlights = ref_text
+    for match in reversed(list(re.finditer(r'\((\d{4}[a-c]?|n\.d\.)\)', ref_text, re.IGNORECASE))):
+        start, end = match.span()
+        highlights = highlights[:start] + "**" + highlights[start:end] + "**" + highlights[end:]
+
+    # APA_LIKE 額外計算
+    apalike_count = 0
+    for match in re.finditer(r'([,，.。])\s*(\d{4})[.。]', ref_text):
+        year_pos = match.start(2)
+        pre_context = ref_text[max(0, year_pos - 5):year_pos]
+        if not re.search(r'\d', pre_context):
+            apalike_count += 1
+
+    year_count = len(re.findall(r'\((\d{4}[a-c]?|n\.d\.)\)', ref_text, re.IGNORECASE)) + apalike_count
+
+    # 輸出到 UI
+    st.markdown(f"**{ref_index}.**")
+    st.write(highlights)
+    st.markdown(f"""
+    • 📰 **擷取標題**：{title if title else "❌ 無法擷取"}  
+    • 🔍 **擷取 DOI**：{doi if doi else "❌ 無 DOI"}  
+    • 🏷️ **偵測風格**：{style}  
+    • 📅 **年份出現次數**：{year_count}  
+    """)
+    return (ref_text, title) if title else None
+
 
 # ========== Streamlit UI ==========
 st.set_page_config(page_title="Reference Checker", layout="centered")
@@ -522,54 +591,25 @@ if uploaded_files and start_button:
         with st.expander("逐筆參考文獻解析結果（合併後段落 + 標題 + DOI + 格式）"):
             ref_index = 1
             for para in merged_references:
-                # 若同段包含多個 APA 年份，先強制分段處理
-                year_matches = list(re.finditer(r'\(\d{4}[a-c]?\)', para))
-                if len(year_matches) >= 2:
+                year_matches = re.findall(r'\((\d{4}[a-c]?|n\.d\.)\)', para, re.IGNORECASE)
+                apalike_matches = []
+                for match in re.finditer(r'([,，.。])\s*(\d{4})[.。]', para):
+                    year_pos = match.start(2)
+                    if not re.search(r'\d', para[max(0, year_pos - 5):year_pos]):
+                        apalike_matches.append(match)
+
+                if len(year_matches) + len(apalike_matches) >= 2:
                     sub_refs = split_multiple_apa_in_paragraph(para)
-                    st.markdown(f"🔍 強制切分段落（原始段落含 {len(year_matches)} 年份）：")
-                    for i, sub_ref in enumerate(sub_refs, 1):
-                        style = detect_reference_style(sub_ref)
-                        title = extract_title(sub_ref, style)
-                        doi = extract_doi(sub_ref)
-
-                        highlights = sub_ref
-                        for match in reversed(list(re.finditer(r'\(\d{4}[a-c]?\)', sub_ref))):
-                            start, end = match.span()
-                            highlights = highlights[:start] + "**" + highlights[start:end] + "**" + highlights[end:]
-
-
-                        st.markdown(f"**{ref_index}.**")
-                        st.write(highlights)
-                        st.markdown(f"""
-                        • 📰 **擷取標題**：{title if title else "❌ 無法擷取"}  
-                        • 🔍 **擷取 DOI**：{doi if doi else "❌ 無 DOI"}  
-                        • 🏷️ **偵測風格**：`{style}`  
-                        • 📅 **年份出現次數**：{len(re.findall(r'\(\d{4}[a-c]?\)', sub_ref))}  
-                        """)
-                        if title:
-                            title_pairs.append((sub_ref, title))
+                    st.markdown(f"🔍 強制切分段落（原始段落含 {len(year_matches) + len(apalike_matches)} 年份）：")
+                    for sub_ref in sub_refs:
+                        result = analyze_single_reference(sub_ref, ref_index)
+                        if result:
+                            title_pairs.append(result)
                         ref_index += 1
                 else:
-                    ref = para
-                    style = detect_reference_style(ref)
-                    title = extract_title(ref, style)
-                    doi = extract_doi(ref)
-
-                    highlights = ref
-                    for match in reversed(list(re.finditer(r'\(\d{4}[a-c]?\)', ref))):
-                        start, end = match.span()
-                        highlights = highlights[:start] + "**" + highlights[start:end] + "**" + highlights[end:]
-
-                    st.markdown(f"**{ref_index}.**")
-                    st.write(highlights)
-                    st.markdown(f"""
-                    • 📰 **擷取標題**：{title if title else "❌ 無法擷取"}  
-                    • 🔍 **擷取 DOI**：{doi if doi else "❌ 無 DOI"}  
-                    • 🏷️ **偵測風格**：`{style}`  
-                    • 📅 **年份出現次數**：{len(re.findall(r'\((\d{4}[a-c]?|n\.d\.)\)', ref, re.IGNORECASE))}  
-                    """)
-                    if title:
-                        title_pairs.append((ref, title))
+                    result = analyze_single_reference(para, ref_index)
+                    if result:
+                        title_pairs.append(result)
                     ref_index += 1
 
 
