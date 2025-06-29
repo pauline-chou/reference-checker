@@ -506,7 +506,7 @@ def extract_title(ref_text, style):
     if style == "APA":
         # 改進：結尾可以是「.」、「。」或「,」，排除數字之間的逗號或句點
         match = re.search(
-            r'[（(](\d{4}[a-c]?|n\.d\.)[）)]\s*[。\.]\s*(.+?)(?:(?<!\d)[.,。](?!\d)|$)',
+            r'[（(](\d{4}[a-c]?|n\.d\.)[）)]\s*[。\.]\s*(.+?)(?:(?<!\d)[,，.。](?!\d)|$)',
             ref_text,
             re.IGNORECASE
         )
@@ -524,7 +524,7 @@ def extract_title(ref_text, style):
     elif style == "APA_LIKE":
         # 常見格式：, 或 . 或 ， 後面緊接 4 位數字 + . 或 。 
         match = re.search(
-            r'[,，.。]\s*\d{4}(?:[.。],?)+\s*(.*?)(?:(?<!\d)[.,。](?!\d)|$)',
+            r'[,，.。]\s*\d{4}(?:[.。],?)+\s*(.*?)(?:(?<!\d)[,，.。](?!\d)|$)',
             ref_text
         )
         if match:
