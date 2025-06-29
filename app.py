@@ -65,6 +65,14 @@ def search_crossref_by_doi(doi):
             return None, item.get("URL")
     return None, None
 
+# ========== 年份規則 ==========
+def is_valid_year(year_str):
+    try:
+        year = int(year_str)
+        return 1000 <= year <= 2050
+    except:
+        return False
+
 # ========== 清洗標題 ==========
 def clean_title(text):
     # 移除 dash 類符號
@@ -365,20 +373,35 @@ def detect_reference_style(ref_text):
     # IEEE 通常開頭是 [1]，或含有英文引號 "標題"
     if re.match(r'^\[\d+\]', ref_text) or '"' in ref_text:
         return "IEEE"
+
     # APA 常見結構：作者（西元年）。標題。 支援全形或半形括號與句點混用
-    if re.search(r'[（(](\d{4}[a-c]?|n\.d\.)[）)]?[。\.]?', ref_text, re.IGNORECASE):
-        return "APA"
+    apa_match = re.search(r'[（(](\d{4}[a-c]?|n\.d\.)[）)]?[。\.]?', ref_text, re.IGNORECASE)
+    if apa_match:
+        year_str = apa_match.group(1)[:4]
+        year_pos = apa_match.start(1)
+        pre_context = ref_text[max(0, year_pos - 5):year_pos]
+        if not re.search(r'\d', pre_context):
+            if year_str.isdigit() and is_valid_year(year_str):
+                return "APA"
+            elif apa_match.group(1).lower() == "n.d.":
+                return "APA"
+
     # APA_LIKE：逗號或句點 + 年份 + 句點/句號，但需排除前5字含數字的情況
     matches = re.finditer(r'([,，.。])\s*(\d{4})[.。]', ref_text)
     for match in matches:
         start_idx = match.start(2)
+        year_str = match.group(2)
         pre_context = ref_text[max(0, start_idx - 5):start_idx]
-        if not re.search(r'\d', pre_context):  # 前5字元不能有數字
+        if not re.search(r'\d', pre_context) and is_valid_year(year_str):
             return "APA_LIKE"
+
     # 新增這段：處理「，2011，。」格式
-    if re.search(r'，\s*\d{4}\s*，\s*。', ref_text):
-        return "APA_LIKE"
-        
+    year_matches = re.finditer(r'，\s*(\d{4})\s*，\s*。', ref_text)
+    for match in year_matches:
+        year_str = match.group(1)
+        if is_valid_year(year_str):
+            return "APA_LIKE"
+
     return "Unknown"
 
 # ========== 段落合併器（PDF 專用，根據參考文獻開頭切分） ==========
@@ -388,9 +411,17 @@ def is_reference_head(para):
     判斷段落是否為參考文獻開頭（APA、APA_LIKE 或 IEEE）
     """
 
-    # APA：允許任何 4 位數字或 n.d.，但後面必須是 . 空白（符合 APA 格式）
-    if re.search(r"[（(](\d{4}[a-c]?|n\.d\.)[）)]?[。\.]?\s?", para, re.IGNORECASE):
-        return True
+    # APA：允許任何 4 位數字或 n.d.，但年份前不得有數字（避免 887(2006) 誤判）
+    apa_match = re.search(r"[（(](\d{4}[a-c]?|n\.d\.)[）)]?[。\.]?\s?", para, re.IGNORECASE)
+    if apa_match:
+        year_str = apa_match.group(1)[:4]
+        year_pos = apa_match.start(1)
+        pre_context = para[max(0, year_pos - 5):year_pos]
+        if not re.search(r'\d', pre_context):
+            if year_str.isdigit() and is_valid_year(year_str):
+                return True
+            elif apa_match.group(1).lower() == "n.d.":
+                return True
 
     # IEEE：開頭為 [數字]
     if re.match(r"^\[\d+\]", para):
@@ -399,9 +430,10 @@ def is_reference_head(para):
     # APA_LIKE：, 或 . 或 ， 後面緊接 4 位數字 + . 或 。 
     matches = re.finditer(r'([,，.。])\s*(\d{4})[.。]', para)
     for match in matches:
+        year_str = match.group(2)
         start_idx = match.start(2)
         pre_context = para[max(0, start_idx - 5):start_idx]
-        if not re.search(r'\d', pre_context):  # 前 5 個字元不能有數字
+        if not re.search(r'\d', pre_context) and is_valid_year(year_str):
             return True
 
     return False
@@ -425,13 +457,22 @@ def merge_references_by_heads(paragraphs):
     merged = []
 
     for para in paragraphs:
-        # 若包含多個 APA 年份或 APA_LIKE 年份，先嘗試強制切分
-        apa_count = len(re.findall(r'[（(](\d{4}[a-c]?|n\.d\.)[）)]\s*[。\.]', para, re.IGNORECASE))
+        # APA 年份計數（新增前 5 字元不得包含數字的條件）
+        apa_count = 0
+        for match in re.finditer(r'[（(](\d{4}[a-c]?|n\.d\.)[）)]\s*[。\.]', para, re.IGNORECASE):
+            year_str = match.group(1)[:4]
+            year_pos = match.start(1)
+            pre_context = para[max(0, year_pos - 5):year_pos]
+            if not re.search(r'\d', pre_context) and (year_str.isdigit() and is_valid_year(year_str) or year_str.lower() == "n.d."):
+                apa_count += 1
+
+        # APA_LIKE 年份計數
         apalike_count = 0
         for match in re.finditer(r'([,，.。])\s*(\d{4})[.。]', para):
             year_pos = match.start(2)
+            year_str = match.group(2)
             pre_context = para[max(0, year_pos - 5):year_pos]
-            if not re.search(r'\d', pre_context):
+            if not re.search(r'\d', pre_context) and is_valid_year(year_str):
                 apalike_count += 1
 
         if apa_count >= 2 or apalike_count >= 2:
@@ -458,22 +499,32 @@ def split_multiple_apa_in_paragraph(paragraph):
     """
 
     # 找 APA 年份位置
-    apa_matches = list(re.finditer(r'[（(](\d{4}[a-c]?|n\.d\.)[）)]?[。\.]?', paragraph, re.IGNORECASE))
-
+    apa_matches = []
+    for match in re.finditer(r'[（(](\d{4}[a-c]?|n\.d\.)[）)]?[。\.]?', paragraph, re.IGNORECASE):
+        year_str = match.group(1)[:4]
+        year_pos = match.start(1)
+        pre_context = paragraph[max(0, year_pos - 5):year_pos]
+        if not re.search(r'\d', pre_context):
+            if year_str.isdigit() and is_valid_year(year_str):
+                apa_matches.append(match)
+            elif year_str.lower() == "n.d.":  # 保留 n.d.
+                apa_matches.append(match)
 
     # 找 APA_LIKE 年份位置（正常格式：, 或 . + 年份 + .）
     apalike_matches = []
     for match in re.finditer(r'([,，.。])\s*(\d{4})[.。]', paragraph):
         year_pos = match.start(2)
+        year_str = match.group(2)
         pre_context = paragraph[max(0, year_pos - 5):year_pos]
-        if not re.search(r'\d', pre_context):  # 前 5 字元不能有數字
+        if not re.search(r'\d', pre_context) and is_valid_year(year_str):
             apalike_matches.append(match)
 
     # 額外處理格式：，2011，。
     for match in re.finditer(r'，\s*(\d{4})\s*，\s*。', paragraph):
         year_pos = match.start(1)
+        year_str = match.group(1)
         pre_context = paragraph[max(0, year_pos - 5):year_pos]
-        if not re.search(r'\d', pre_context):  # 前 5 字元不能有數字
+        if not re.search(r'\d', pre_context) and is_valid_year(year_str):
             apalike_matches.append(match)
 
     # 統一處理：合併 APA 與 APA_LIKE 的 match list，按位置排序
@@ -501,6 +552,7 @@ def split_multiple_apa_in_paragraph(paragraph):
     return [s for s in segments if s]
 
 
+
 # ========== 擷取標題 ==========
 def extract_title(ref_text, style):
     if style == "APA":
@@ -511,7 +563,10 @@ def extract_title(ref_text, style):
             re.IGNORECASE
         )
         if match:
-            return match.group(2).strip(" ,.")  # 去除結尾的逗號或句號
+            year_str = match.group(1)[:4]
+            if year_str.isdigit() and not is_valid_year(year_str):
+                return None
+            return match.group(2).strip(" ,.")
 
     elif style == "IEEE":
         matches = re.findall(r'"([^"]+)"', ref_text)
@@ -524,11 +579,13 @@ def extract_title(ref_text, style):
     elif style == "APA_LIKE":
         # 常見格式：, 或 . 或 ， 後面緊接 4 位數字 + . 或 。 
         match = re.search(
-            r'[,，.。]\s*\d{4}(?:[.。],?)+\s*(.*?)(?:(?<!\d)[,，.。](?!\d)|$)',
+            r'[,，.。]\s*(\d{4})(?:[.。],?)+\s*(.*?)(?:(?<!\d)[,，.。](?!\d)|$)',
             ref_text
         )
         if match:
-            return match.group(1).strip(" ,。")
+            year_str = match.group(1)
+            if is_valid_year(year_str):
+                return match.group(2).strip(" ,。")
 
         # 🔧 新增支援格式：，，2011，。標題...
         match = re.search(
@@ -536,9 +593,12 @@ def extract_title(ref_text, style):
             ref_text
         )
         if match:
-            return match.group(2).strip(" ,。")
+            year_str = match.group(1)
+            if is_valid_year(year_str):
+                return match.group(2).strip(" ,。")
 
     return None
+
 
 
 
@@ -548,25 +608,49 @@ def analyze_single_reference(ref_text, ref_index):
     title = extract_title(ref_text, style)
     doi = extract_doi(ref_text)
 
-    # 高亮顯示 APA/APA_LIKE 年份
+    # 亮出 APA/APA_LIKE 年份（APA 加入前 5 字元不得含數字的過濾）
     highlights = ref_text
     for match in reversed(list(re.finditer(r'\((\d{4}[a-c]?|n\.d\.)\)', ref_text, re.IGNORECASE))):
-        start, end = match.span()
-        highlights = highlights[:start] + "**" + highlights[start:end] + "**" + highlights[end:]
+        year_str = match.group(1)[:4]
+        year_pos = match.start(1)
+        pre_context = ref_text[max(0, year_pos - 5):year_pos]
+        if not re.search(r'\d', pre_context):
+            if year_str.isdigit() and is_valid_year(year_str):
+                start, end = match.span()
+                highlights = highlights[:start] + "**" + highlights[start:end] + "**" + highlights[end:]
+            elif match.group(1).lower() == "n.d.":
+                start, end = match.span()
+                highlights = highlights[:start] + "**" + highlights[start:end] + "**" + highlights[end:]
 
     # APA_LIKE 額外統計 1：逗號/句點 + 年份 + 句點
     apalike_count = 0
     for match in re.finditer(r'([,，.。])\s*(\d{4})[.。]', ref_text):
         year_pos = match.start(2)
+        year_str = match.group(2)
         pre_context = ref_text[max(0, year_pos - 5):year_pos]
-        if not re.search(r'\d', pre_context):
+        if not re.search(r'\d', pre_context) and is_valid_year(year_str):
             apalike_count += 1
 
-    # APA_LIKE 額外統計 2：格式為 ，2011，。
-    extra_apalike_count = len(re.findall(r'，\s*\d{4}\s*，\s*。', ref_text))
 
-    # 合計所有年份出現次數
-    apa_year_count = len(re.findall(r'\((\d{4}[a-c]?|n\.d\.)\)', ref_text, re.IGNORECASE))
+    # APA_LIKE 額外統計 2：格式為 ，2011，。
+    extra_apalike_count = 0
+    for match in re.finditer(r'，\s*(\d{4})\s*，\s*。', ref_text):
+        year_str = match.group(1)
+        if is_valid_year(year_str):
+            extra_apalike_count += 1
+
+    # APA 年份統計（加上前五字元不得含數字的條件）
+    apa_year_count = 0
+    for match in re.finditer(r'\((\d{4}[a-c]?|n\.d\.)\)', ref_text, re.IGNORECASE):
+        year_str = match.group(1)[:4]
+        year_pos = match.start(1)
+        pre_context = ref_text[max(0, year_pos - 5):year_pos]
+        if not re.search(r'\d', pre_context):
+            if year_str.isdigit() and is_valid_year(year_str):
+                apa_year_count += 1
+            elif match.group(1).lower() == "n.d.":
+                apa_year_count += 1
+
     year_count = apa_year_count + apalike_count + extra_apalike_count
 
     # 輸出到 UI
@@ -579,6 +663,7 @@ def analyze_single_reference(ref_text, ref_index):
     • 📅 **年份出現次數**：{year_count}  
     """)
     return (ref_text, title) if title else None
+
 
 # ========== Streamlit UI ==========
 st.set_page_config(page_title="Reference Checker", layout="centered")
@@ -655,15 +740,28 @@ if uploaded_files and start_button:
         with st.expander("逐筆參考文獻解析結果（合併後段落 + 標題 + DOI + 格式）"):
             ref_index = 1
             for para in merged_references:
-                year_matches = re.findall(r'\((\d{4}[a-c]?|n\.d\.)\)', para, re.IGNORECASE)
-                apalike_matches = [
-                    match for match in re.finditer(r'([,，.。])\s*(\d{4})[.。]', para)
-                    if not re.search(r'\d', para[max(0, match.start(2) - 5):match.start(2)])
+                # APA 年份匹配與過濾
+                year_matches = [
+                    m for m in re.finditer(r'\((\d{4}[a-c]?|n\.d\.)\)', para, re.IGNORECASE)
+                    if m.group(1).lower() == "n.d." or (m.group(1)[:4].isdigit() and is_valid_year(m.group(1)[:4]))
                 ]
-                extra_apalike_matches = list(re.finditer(r'，\s*(\d{4})\s*，\s*。', para))
-                if len(year_matches) + len(apalike_matches) + len(extra_apalike_matches) >= 2:
+
+                # APA_LIKE 年份匹配與過濾
+                apalike_matches = [
+                    m for m in re.finditer(r'([,，.。])\s*(\d{4})[.。]', para)
+                    if not re.search(r'\d', para[max(0, m.start(2) - 5):m.start(2)]) and is_valid_year(m.group(2))
+                ]
+
+                # 特例格式（，2011，。）匹配與過濾
+                extra_apalike_matches = [
+                    m for m in re.finditer(r'，\s*(\d{4})\s*，\s*。', para)
+                    if is_valid_year(m.group(1))
+                ]
+
+                total_valid_years = len(year_matches) + len(apalike_matches) + len(extra_apalike_matches)
+                if total_valid_years >= 2:
                     sub_refs = split_multiple_apa_in_paragraph(para)
-                    st.markdown(f"🔍 強制切分段落（原始段落含 {len(year_matches) + len(apalike_matches)} 年份）：")
+                    st.markdown(f"🔍 強制切分段落（原始段落含 {total_valid_years} 個年份）：")
                     for sub_ref in sub_refs:
                         result = analyze_single_reference(sub_ref, ref_index)
                         if result:
@@ -674,6 +772,7 @@ if uploaded_files and start_button:
                     if result:
                         title_pairs.append(result)
                     ref_index += 1
+
 
         # 查詢
         crossref_doi_hits = {}
