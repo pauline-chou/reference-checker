@@ -361,6 +361,21 @@ def is_reference_head(para):
 
     return False
 
+def detect_and_split_ieee(paragraphs):
+    """
+    若第一段為 IEEE 格式 [1] 開頭，則將整段合併並依據 [數字] 切割
+    """
+    if not paragraphs:
+        return None
+
+    first_line = paragraphs[0].strip()
+    if not re.match(r'^\[\d+\]', first_line):
+        return None
+
+    full_text = ' '.join(paragraphs)  # 將換行視為空格
+    refs = re.split(r'(?=\[\d+\])', full_text)  # 用 lookahead 保留切割點
+    return [r.strip() for r in refs if r.strip()]
+
 def merge_references_by_heads(paragraphs):
     merged = []
 
@@ -528,76 +543,54 @@ if uploaded_files and start_button:
         file_ext = uploaded_file.name.split(".")[-1].lower()
         st.markdown(f"📄 處理檔案： {uploaded_file.name}")
 
-        # 顯示獨立進度條（要寫在檔案 for 迴圈內）
         file_progress = st.progress(0.0)
-
         scholar_logs = []
-
 
         # 檔案解析
         if file_ext == "docx":
             paragraphs = extract_paragraphs_from_docx(uploaded_file)
-            skip_section_detection = False
         elif file_ext == "pdf":
             paragraphs = extract_paragraphs_from_pdf(uploaded_file)
-            skip_section_detection = False
-            
         else:
             st.warning(f"⚠️ 檔案 {uploaded_file.name} 格式不支援，將略過。")
             continue
 
-
         # 偵測參考文獻段落
-        matched_section = []
-        if not skip_section_detection:
-            matched_method = "標準偵測"  # 預設值，避免未定義錯誤
-            matched_section, matched_keyword = extract_reference_section_from_bottom(paragraphs)
-            # fallback：如果沒找到任何符合的關鍵字段落，就直接用整份處理
-            if not matched_section:
-                st.warning(f"⚠️ 檔案 {uploaded_file.name} 原方法未找到參考文獻區段，嘗試使用改進版識別...")
-                matched_section, matched_keyword, matched_method = extract_reference_section_improved(paragraphs)
-
-                if matched_section:
-                    st.info(f"✅ 改進版成功識別參考文獻段落（方法：{matched_method}，識別關鍵：{matched_keyword}）")
-                else:
-                    st.warning(f"❌ 改進版仍無法識別參考文獻區段，將嘗試以全文處理。")
-                    matched_section = paragraphs
-                    matched_keyword = "全文處理"
-        else:
-            matched_section = paragraphs
+        matched_section, matched_keyword = extract_reference_section_from_bottom(paragraphs)
+        matched_method = "標準偵測"
+        if not matched_section:
+            st.warning(f"⚠️ 檔案 {uploaded_file.name} 原方法未找到參考文獻區段，嘗試使用改進版識別...")
+            matched_section, matched_keyword, matched_method = extract_reference_section_improved(paragraphs)
+            if matched_section:
+                st.info(f"✅ 改進版成功識別參考文獻段落（方法：{matched_method}，識別關鍵：{matched_keyword}）")
+            else:
+                st.warning("❌ 改進版仍無法識別參考文獻區段，將嘗試以全文處理。")
+                matched_section = paragraphs
+                matched_keyword = "全文處理"
+                matched_method = "全文處理"
 
         with st.expander("擷取到的參考文獻段落（供人工檢查）"):
-                if matched_keyword != "全文處理":
-                    st.markdown(f"參考文獻段落偵測方式：**{matched_method}**")
-                    st.markdown(f"起始關鍵段落：**{matched_keyword}**")
-                else:
-                    st.markdown("🔍 未能明確偵測到參考文獻段落，改以整份文件處理。")
+            st.markdown(f"參考文獻段落偵測方式：**{matched_method}**")
+            st.markdown(f"起始關鍵段落：**{matched_keyword}**")
+            for i, para in enumerate(matched_section, 1):
+                st.markdown(f"**{i}.** {para}")
 
-                for i, para in enumerate(matched_section, 1):
-                    st.markdown(f"**{i}.** {para}")
-
-        
-        # 合併 PDF 分段參考文獻（使用統一的「開頭合併法」）
+        # 合併
         if file_ext == "pdf":
-            merged_references = merge_references_by_heads(matched_section)
+            ieee_refs = detect_and_split_ieee(matched_section)
+            merged_references = ieee_refs if ieee_refs else merge_references_by_heads(matched_section)
         else:
             merged_references = matched_section
 
-
-
-
-        # 改為使用 merged_references 處理每筆文獻
         title_pairs = []
         with st.expander("逐筆參考文獻解析結果（合併後段落 + 標題 + DOI + 格式）"):
             ref_index = 1
             for para in merged_references:
                 year_matches = re.findall(r'\((\d{4}[a-c]?|n\.d\.)\)', para, re.IGNORECASE)
-                apalike_matches = []
-                for match in re.finditer(r'([,，.。])\s*(\d{4})[.。]', para):
-                    year_pos = match.start(2)
-                    if not re.search(r'\d', para[max(0, year_pos - 5):year_pos]):
-                        apalike_matches.append(match)
-
+                apalike_matches = [
+                    match for match in re.finditer(r'([,，.。])\s*(\d{4})[.。]', para)
+                    if not re.search(r'\d', para[max(0, match.start(2) - 5):match.start(2)])
+                ]
                 if len(year_matches) + len(apalike_matches) >= 2:
                     sub_refs = split_multiple_apa_in_paragraph(para)
                     st.markdown(f"🔍 強制切分段落（原始段落含 {len(year_matches) + len(apalike_matches)} 年份）：")
@@ -612,16 +605,13 @@ if uploaded_files and start_button:
                         title_pairs.append(result)
                     ref_index += 1
 
-
-
-        # 查詢處理
+        # 查詢
         crossref_doi_hits = {}
         scopus_hits = {}
         scholar_hits = {}
         scholar_similar = {}
         scholar_remedial = {}
         not_found = []
-        
 
         for i, (ref, title) in enumerate(title_pairs, 1):
             doi = extract_doi(ref)
@@ -639,20 +629,14 @@ if uploaded_files and start_button:
                 gs_url, gs_type = search_scholar_by_title(title, SERPAPI_KEY)
                 scholar_logs.append(f"Google Scholar 回傳類型：{gs_type} / 標題：{title}")
                 if gs_type == "match":
-                    if title and title.strip():  # 加一層保險
-                        scholar_hits[ref] = gs_url
-                    else:
-                        not_found.append(ref) # 收集查詢紀錄
+                    scholar_hits[ref] = gs_url
                 elif gs_type == "similar":
                     scholar_similar[ref] = gs_url
                 elif gs_type == "error":
-                    # Scholar 查詢本身失敗，不再補救，直接列入查無結果
                     not_found.append(ref)
                 else:
-                    # 加入補救查詢
                     remedial_url, remedial_type = search_scholar_by_ref_text(ref, SERPAPI_KEY)
-                    scholar_logs.append(f"Google Scholar 回傳類型：remedial_{remedial_type} / 標題：{title}")  # 收集補救結果
-
+                    scholar_logs.append(f"Google Scholar 回傳類型：remedial_{remedial_type} / 標題：{title}")
                     if remedial_type == "remedial":
                         scholar_remedial[ref] = remedial_url
                     else:
@@ -660,11 +644,12 @@ if uploaded_files and start_button:
 
             file_progress.progress(i / len(title_pairs))
 
-    if scholar_logs:
-        with st.expander("Google Scholar 查詢過程紀錄"):
-            for line in scholar_logs:
-                st.text(line)
+        if scholar_logs:
+            with st.expander("Google Scholar 查詢過程紀錄"):
+                for line in scholar_logs:
+                    st.text(line)
 
+        # 每個檔案都記錄結果
         file_results = {
             "filename": uploaded_file.name,
             "title_pairs": title_pairs,
@@ -679,6 +664,7 @@ if uploaded_files and start_button:
 
         all_results.append(file_results)
 
+    # 檔案處理完畢，儲存至 session
     st.session_state.query_results = all_results
 
 # 如果 SerpAPI 用量已超過，顯示一次性提示
