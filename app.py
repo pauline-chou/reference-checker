@@ -387,7 +387,7 @@ def detect_reference_style(ref_text):
                 return "APA"
 
     # APA_LIKE：逗號或句點 + 年份 + 句點/句號，但需排除前5字含數字的情況
-    matches = re.finditer(r'([,，.。])\s*(\d{4})[.。]', ref_text)
+    matches = re.finditer(r'([,，.。])\s*(\d{4})[.。，]', ref_text)
     for match in matches:
         start_idx = match.start(2)
         year_str = match.group(2)
@@ -428,7 +428,7 @@ def is_reference_head(para):
         return True
 
     # APA_LIKE：, 或 . 或 ， 後面緊接 4 位數字 + . 或 。 
-    matches = re.finditer(r'([,，.。])\s*(\d{4})[.。]', para)
+    matches = re.finditer(r'([,，.。])\s*(\d{4})[.。，]', para)
     for match in matches:
         year_str = match.group(2)
         start_idx = match.start(2)
@@ -468,7 +468,7 @@ def merge_references_by_heads(paragraphs):
 
         # APA_LIKE 年份計數
         apalike_count = 0
-        for match in re.finditer(r'([,，.。])\s*(\d{4})[.。]', para):
+        for match in re.finditer(r'([,，.。])\s*(\d{4})[.。，]', para):
             year_pos = match.start(2)
             year_str = match.group(2)
             pre_context = para[max(0, year_pos - 5):year_pos]
@@ -512,7 +512,7 @@ def split_multiple_apa_in_paragraph(paragraph):
 
     # 找 APA_LIKE 年份位置（正常格式：, 或 . + 年份 + .）
     apalike_matches = []
-    for match in re.finditer(r'([,，.。])\s*(\d{4})[.。]', paragraph):
+    for match in re.finditer(r'([,，.。])\s*(\d{4})[.。，]', paragraph):
         year_pos = match.start(2)
         year_str = match.group(2)
         pre_context = paragraph[max(0, year_pos - 5):year_pos]
@@ -579,7 +579,7 @@ def extract_title(ref_text, style):
     elif style == "APA_LIKE":
         # 常見格式：, 或 . 或 ， 後面緊接 4 位數字 + . 或 。 
         match = re.search(
-            r'[,，.。]\s*(\d{4})(?:[.。],?)+\s*(.*?)(?:(?<!\d)[,，.。](?!\d)|$)',
+            r'[,，.。]\s*(\d{4})(?:[.。，])+\s*(.*?)(?:(?<!\d)[,，.。](?!\d)|$)',
             ref_text
         )
         if match:
@@ -624,7 +624,7 @@ def analyze_single_reference(ref_text, ref_index):
 
     # APA_LIKE 額外統計 1：逗號/句點 + 年份 + 句點
     apalike_count = 0
-    for match in re.finditer(r'([,，.。])\s*(\d{4})[.。]', ref_text):
+    for match in re.finditer(r'([,，.。])\s*(\d{4})[.。，]', ref_text):
         year_pos = match.start(2)
         year_str = match.group(2)
         pre_context = ref_text[max(0, year_pos - 5):year_pos]
@@ -748,7 +748,7 @@ if uploaded_files and start_button:
 
                 # APA_LIKE 年份匹配與過濾
                 apalike_matches = [
-                    m for m in re.finditer(r'([,，.。])\s*(\d{4})[.。]', para)
+                    m for m in re.finditer(r'([,，.。])\s*(\d{4})[.。，]', para)
                     if not re.search(r'\d', para[max(0, m.start(2) - 5):m.start(2)]) and is_valid_year(m.group(2))
                 ]
 
