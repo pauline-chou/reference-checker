@@ -225,7 +225,7 @@ def extract_reference_section_from_bottom(paragraphs, start_keywords=None):
     """
     if start_keywords is None:
         start_keywords = [
-            "參考文獻", "references", "reference",
+            "參考文獻", "參考資料", "references", "reference",
             "bibliography", "works cited", "literature cited"
         ]
 
@@ -346,7 +346,7 @@ def detect_reference_style(ref_text):
     if re.match(r'^\[\d+\]', ref_text) or '"' in ref_text:
         return "IEEE"
     # APA 常見結構：作者（西元年）。標題。 支援全形或半形括號與句點混用
-    if re.search(r'[（(](\d{4}[a-c]?|n\.d\.)[）)][。\.]', ref_text, re.IGNORECASE):
+    if re.search(r'[（(](\d{4}[a-c]?|n\.d\.)[）)]?[。\.]?', ref_text, re.IGNORECASE):
         return "APA"
     # APA_LIKE：逗號或句點 + 年份 + 句點/句號，但需排除前5字含數字的情況
     matches = re.finditer(r'([,，.。])\s*(\d{4})[.。]', ref_text)
@@ -366,7 +366,7 @@ def is_reference_head(para):
     """
 
     # APA：允許任何 4 位數字或 n.d.，但後面必須是 . 空白（符合 APA 格式）
-    if re.search(r"[（(](\d{4}[a-c]?|n\.d\.)[）)][。\.]\s", para, re.IGNORECASE):
+    if re.search(r"[（(](\d{4}[a-c]?|n\.d\.)[）)]?[。\.]?\s?", para, re.IGNORECASE):
         return True
 
     # IEEE：開頭為 [數字]
@@ -403,7 +403,7 @@ def merge_references_by_heads(paragraphs):
 
     for para in paragraphs:
         # 若包含多個 APA 年份或 APA_LIKE 年份，先嘗試強制切分
-        apa_count = len(re.findall(r'\(\d{4}[a-c]?\)', para))
+        apa_count = len(re.findall(r'[（(](\d{4}[a-c]?|n\.d\.)[）)]\s*[。\.]', para, re.IGNORECASE))
         apalike_count = 0
         for match in re.finditer(r'([,，.。])\s*(\d{4})[.。]', para):
             year_pos = match.start(2)
@@ -435,7 +435,7 @@ def split_multiple_apa_in_paragraph(paragraph):
     """
 
     # 找 APA 年份位置
-    apa_matches = list(re.finditer(r'[（(](\d{4}[a-z]?|n\.d\.)[）)][。\.]', paragraph, re.IGNORECASE))
+    apa_matches = list(re.finditer(r'[（(](\d{4}[a-c]?|n\.d\.)[）)]?[。\.]?', paragraph, re.IGNORECASE))
 
     # 找 APA_LIKE 年份位置（要加誤判排除）
     apalike_matches = []
@@ -475,7 +475,7 @@ def extract_title(ref_text, style):
     if style == "APA":
         # 改進：結尾可以是「.」、「。」或「,」，排除數字之間的逗號或句點
         match = re.search(
-            r'[（(](\d{4}[a-c]?|n\.d\.)[）)][。\.]\s*(.+?)(?:(?<!\d)[.,。](?!\d)|$)',
+            r'[（(](\d{4}[a-c]?|n\.d\.)[）)]\s*[。\.]\s*(.+?)(?:(?<!\d)[.,。](?!\d)|$)',
             ref_text,
             re.IGNORECASE
         )
