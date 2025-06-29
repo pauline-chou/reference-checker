@@ -218,9 +218,9 @@ def extract_paragraphs_from_pdf(file):
     return paragraphs
 
 # ========== 萃取參考文獻 ==========
-def extract_reference_section_from_bottom(paragraphs, start_keywords=None):
+def extract_reference_section_from_bottom(paragraphs, start_keywords=None, stop_keywords=None):
     """
-    從底部往上找出真正的參考文獻區段起點，並回傳關鍵字來源
+    從底部往上找出參考文獻區段起點，並向下擷取至遇到停止關鍵詞（如附錄）為止
     回傳格式：matched_section, matched_keyword
     """
     if start_keywords is None:
@@ -228,6 +228,9 @@ def extract_reference_section_from_bottom(paragraphs, start_keywords=None):
             "參考文獻", "參考資料", "references", "reference",
             "bibliography", "works cited", "literature cited"
         ]
+
+    if stop_keywords is None:
+        stop_keywords = ["附錄", "附錄一"]
 
     for i in reversed(range(len(paragraphs))):
         para = paragraphs[i].strip()
@@ -238,11 +241,28 @@ def extract_reference_section_from_bottom(paragraphs, start_keywords=None):
 
         normalized = para.lower()
         if normalized in start_keywords:
-            return paragraphs[i + 1:], para  # ✅ 回傳段落和關鍵字本身
+            # 從 i+1 開始擷取，直到遇到 stop_keyword 為止
+            result = []
+            for p in paragraphs[i + 1:]:
+                if any(kw in p.lower() for kw in stop_keywords):
+                    break
+                result.append(p)
+            return result, para
 
     return [], None
 
 # ========== 萃取參考文獻 (加強版) ==========
+#也是需要把附錄截掉
+def clip_until_stop(paragraphs_after, stop_keywords=None):
+    if stop_keywords is None:
+        stop_keywords = ["附錄", "附錄一"]
+    result = []
+    for para in paragraphs_after:
+        if any(kw in para.lower() for kw in stop_keywords):
+            break
+        result.append(para)
+    return result
+
 def extract_reference_section_improved(paragraphs):
     """
     改進的參考文獻區段識別，使用多重策略和容錯機制
@@ -302,7 +322,7 @@ def extract_reference_section_improved(paragraphs):
         if is_chapter_title(para_clean):
             for keyword in reference_keywords:
                 if keyword in para_lower:
-                    return paragraphs[i + 1:], para_clean, "章節標題識別"
+                    return clip_until_stop(paragraphs[i + 1:]), para_clean, "章節標題識別"
         
         # 檢查純標題格式
         if para_lower in reference_keywords:
@@ -311,7 +331,7 @@ def extract_reference_section_improved(paragraphs):
         # 補強：參考文獻前有數字或符號 
         para_no_space = re.sub(r'\s+', '', para_clean)
         if re.match(r'^(\d+|[IVXLCDM]+|[一二三四五六七八九十壹貳參肆伍陸柒捌玖拾]+)?[、．. ]?參考文獻$', para_no_space):
-            return paragraphs[i + 1:], para_clean, "標題含前置數字"  
+            return clip_until_stop(paragraphs[i + 1:]), para_clean, "章節標題識別"
 
     
     # 策略2：關鍵字模糊匹配
@@ -329,7 +349,7 @@ def extract_reference_section_improved(paragraphs):
                 # 檢查後續段落是否有參考文獻格式
                 remaining = paragraphs[i + 1:]
                 if remaining and sum(1 for p in remaining[:5] if is_reference_format(p)) >= 2:
-                    return paragraphs[i + 1:], paragraphs[i], "模糊關鍵字識別"
+                    return clip_until_stop(paragraphs[i + 1:]), para_clean, "章節標題識別"
     
     # 所有策略都失敗
     return [], None, "未找到參考文獻區段"
