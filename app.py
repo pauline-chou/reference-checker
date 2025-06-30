@@ -392,6 +392,11 @@ def detect_reference_style(ref_text):
         start_idx = match.start(2)
         year_str = match.group(2)
         pre_context = ref_text[max(0, start_idx - 5):start_idx]
+        # 年份後方不能緊接小數點數字（排除 2023.12.7）
+        after_fragment = ref_text[match.end(2):match.end(2)+5]
+        if re.match(r'\.\d', after_fragment):
+            continue
+
         if not re.search(r'\d', pre_context) and is_valid_year(year_str):
             return "APA_LIKE"
 
@@ -433,6 +438,11 @@ def is_reference_head(para):
         year_str = match.group(2)
         start_idx = match.start(2)
         pre_context = para[max(0, start_idx - 5):start_idx]
+        # 年份後方不能緊接小數點數字（排除 2023.12.7）
+        after_fragment = para[match.end(2):match.end(2)+5]
+        if re.match(r'\.\d', after_fragment):
+            continue
+
         if not re.search(r'\d', pre_context) and is_valid_year(year_str):
             return True
 
@@ -472,6 +482,11 @@ def merge_references_by_heads(paragraphs):
             year_pos = match.start(2)
             year_str = match.group(2)
             pre_context = para[max(0, year_pos - 5):year_pos]
+            # 年份後方不能緊接小數點數字（排除 2023.12.7）
+            after_fragment = para[match.end(2):match.end(2)+5]
+            if re.match(r'\.\d', after_fragment):
+                continue
+
             if not re.search(r'\d', pre_context) and is_valid_year(year_str):
                 apalike_count += 1
 
@@ -516,6 +531,11 @@ def split_multiple_apa_in_paragraph(paragraph):
         year_pos = match.start(2)
         year_str = match.group(2)
         pre_context = paragraph[max(0, year_pos - 5):year_pos]
+        # 年份後方不能緊接小數點數字（排除 2023.12.7）
+        after_fragment = paragraph[match.end(2):match.end(2)+5]
+        if re.match(r'\.\d', after_fragment):
+            continue
+
         if not re.search(r'\d', pre_context) and is_valid_year(year_str):
             apalike_matches.append(match)
 
@@ -558,7 +578,7 @@ def extract_title(ref_text, style):
     if style == "APA":
         # 改進：結尾可以是「.」、「。」或「,」，排除數字之間的逗號或句點
         match = re.search(
-            r'[（(](\d{4}[a-c]?|n\.d\.)[）)]\s*[。\.]\s*(.+?)(?:(?<!\d)[,，.。](?!\d)|$)',
+            r'[（(](\d{4}[a-c]?|n\.d\.)[）)]\s*[,，.。]\s*(.+?)(?:(?<!\d)[,，.。](?!\d)|$)',
             ref_text,
             re.IGNORECASE
         )
@@ -576,15 +596,16 @@ def extract_title(ref_text, style):
         if fallback:
             return fallback.group(1).strip(" ,.")
 
-    elif style == "APA_LIKE":
-        # 常見格式：, 或 . 或 ， 後面緊接 4 位數字 + . 或 。 
+    elif style == "APA_LIKE": 
         match = re.search(
             r'[,，.。]\s*(\d{4})(?:[.。，])+\s*(.*?)(?:(?<!\d)[,，.。](?!\d)|$)',
             ref_text
         )
         if match:
             year_str = match.group(1)
-            if is_valid_year(year_str):
+            after_fragment = ref_text[match.end(1):match.end(1)+5]
+            if is_valid_year(year_str) and not re.match(r'\.\d', after_fragment):
+
                 return match.group(2).strip(" ,。")
 
         # 🔧 新增支援格式：，，2011，。標題...
@@ -628,6 +649,9 @@ def analyze_single_reference(ref_text, ref_index):
         year_pos = match.start(2)
         year_str = match.group(2)
         pre_context = ref_text[max(0, year_pos - 5):year_pos]
+        after_fragment = ref_text[match.end(2):match.end(2)+5]  # 新增判斷：不能出現 .\d
+        if re.match(r'\.\d', after_fragment):
+            continue
         if not re.search(r'\d', pre_context) and is_valid_year(year_str):
             apalike_count += 1
 
@@ -749,7 +773,9 @@ if uploaded_files and start_button:
                 # APA_LIKE 年份匹配與過濾
                 apalike_matches = [
                     m for m in re.finditer(r'([,，.。])\s*(\d{4})[.。，]', para)
-                    if not re.search(r'\d', para[max(0, m.start(2) - 5):m.start(2)]) and is_valid_year(m.group(2))
+                    if not re.search(r'\d', para[max(0, m.start(2) - 5):m.start(2)])
+                    and is_valid_year(m.group(2))
+                    and not re.match(r'\.\d', para[m.end(2):m.end(2) + 2]) 
                 ]
 
                 # 特例格式（，2011，。）匹配與過濾
