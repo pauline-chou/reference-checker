@@ -139,6 +139,7 @@ def find_apa_matches(ref_text):
 # ========== APA_LIKE規則 ==========
 def find_apalike(ref_text):
     valid_years = []
+
     # 類型 1：標點 + 年份 + 標點（常見格式）
     for match in re.finditer(r'[,，.。]\s*(\d{4}[a-c]?)[.。，]', ref_text):
         year_str = match.group(1)
@@ -146,14 +147,17 @@ def find_apalike(ref_text):
         year_core = year_str[:4]
         if not is_valid_year(year_core):
             continue
+
         # 前 5 字元不能有數字（排除 3.2020. 類型）
         pre_context = ref_text[max(0, year_pos - 5):year_pos]
         if re.search(r'\d', pre_context):
             continue
-        # 後 5 字元不能是小數點數字（排除 2020.1 類型）
+
+        # 若年份後 5 字元是 .加數字，或像 .v06、.abc 等常見 DOI 結尾，則排除
         after_context = ref_text[match.end(1):match.end(1) + 5]
-        if re.match(r'\.\d', after_context):
+        if re.match(r'\.(\d{1,2}|[a-z0-9]{2,})', after_context, re.IGNORECASE):
             continue
+
         # 排除 arXiv 尾巴，例如 arXiv:xxxx.xxxxx, 2023
         arxiv_pattern = re.compile(
             r'arxiv:\d{4}\.\d{5}[^a-zA-Z0-9]{0,3}\s*[,，]?\s*' + re.escape(year_str),
@@ -169,8 +173,13 @@ def find_apalike(ref_text):
     for match in re.finditer(r'，\s*(\d{4}[a-c]?)\s*，\s*。', ref_text):
         year_str = match.group(1)
         year_pos = match.start(1)
-        if is_valid_year(year_core):
-            valid_years.append((year_str, year_pos))
+        year_core = year_str[:4]
+        if not is_valid_year(year_core):
+            continue
+        pre_context = ref_text[max(0, year_pos - 5):year_pos]
+        if re.search(r'\d', pre_context):
+            continue
+        valid_years.append((year_str, year_pos))
 
     return valid_years
 
@@ -207,7 +216,8 @@ def find_apalike_matches(ref_text):
         after_context = ref_text[m.end(1):m.end(1) + 5]
         if re.search(r'\d', pre_context):
             continue
-        if re.match(r'\.\d', after_context):
+        # 新增條件：年份後若接 DOI 型式則排除
+        if re.match(r'\.(\d{1,2}|[a-z0-9]{2,})', after_context, re.IGNORECASE):
             continue
         arxiv_pattern = re.compile(
             r'arxiv:\d{4}\.\d{5}[^a-zA-Z0-9]{0,3}\s*[,，]?\s*' + re.escape(year_str),
@@ -222,6 +232,7 @@ def find_apalike_matches(ref_text):
     for m in re.finditer(pattern2, ref_text):
         year_str = m.group(1)
         year_pos = m.start(1)
+        year_core = year_str[:4]  # ✅ 補上 year_core
         pre_context = ref_text[max(0, year_pos - 5):year_pos]
         if re.search(r'\d', pre_context):
             continue
