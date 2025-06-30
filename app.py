@@ -77,9 +77,12 @@ def is_valid_year(year_str):
     
 # ========== 抓附錄 ========== 
 def is_appendix_heading(text):
-    """判斷段落是否為 APPENDIX（含數字、符號、中文等變化）開頭"""
-    text = text.strip().lower()
-    return bool(re.match(r'^(\d+[.、．]?\s*)?(附錄|appendix)', text, re.IGNORECASE))
+    text = text.strip()
+    return bool(re.match(
+        r'^((\d+|[IVXLCDM]+|[一二三四五六七八九十壹貳參肆伍陸柒捌玖拾]+)[、．. ]?\s*)?(附錄|APPENDIX)',
+        text,
+        re.IGNORECASE
+    ))
 
 # ========== APA規則 ==========    
 def find_apa(ref_text):
