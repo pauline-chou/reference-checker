@@ -442,7 +442,7 @@ def clip_until_stop(paragraphs_after):
 
 def extract_reference_section_improved(paragraphs):
     """
-    改進的參考文獻區段識別，使用多重策略和容錯機制
+    改進的參考文獻區段識別，從底部往上掃描，使用多重策略和容錯機制
     返回：(參考文獻段落列表, 識別到的標題, 識別方法)
     """
 
@@ -450,22 +450,11 @@ def extract_reference_section_improved(paragraphs):
         text = text.strip()
         if len(text) < 10:
             return False
-        if re.search(r'\(\d{4}[a-c]?\)', text):
+        if re.search(r'\(\d{4}[a-c]?\)', text):  # APA 年份格式
             return True
-        if re.match(r'^\[\d+\]', text):
+        if re.match(r'^\[\d+\]', text):         # IEEE 編號格式
             return True
-        if re.search(r'[A-Z][a-z]+,\s*[A-Z]\.', text):
-            return True
-        return False
-
-    def is_chapter_title(text):
-        text = text.strip()
-        chinese_nums = r'[一二三四五六七八九十壹貳參肆伍陸柒捌玖拾]+'
-        if re.match(f'^{chinese_nums}[、．.]', text):
-            return True
-        if re.match(r'^\d+[、．.]', text):
-            return True
-        if re.match(r'^[IVX]+[、．.]', text):
+        if re.search(r'[A-Z][a-z]+,\s*[A-Z]\.', text):  # 作者名樣式
             return True
         return False
 
@@ -474,32 +463,27 @@ def extract_reference_section_improved(paragraphs):
         "bibliography", "works cited", "literature cited"
     ]
 
-    for i, para in enumerate(paragraphs):
-        para_clean = para.strip()
-        para_lower = para_clean.lower()
+    # ✅ 從底部往上掃描
+    for i in reversed(range(len(paragraphs))):
+        para = paragraphs[i].strip()
+        para_lower = para.lower()
+        para_nospace = re.sub(r'\s+', '', para_lower)
 
-        if is_chapter_title(para_clean):
-            for keyword in reference_keywords:
-                if keyword in para_lower:
-                    return clip_until_stop(paragraphs[i + 1:]), para_clean, "章節標題識別"
-
+        # ✅ 純標題相符（e.g. "References"）
         if para_lower in reference_keywords:
-            return clip_until_stop(paragraphs[i + 1:]), para_clean, "純標題識別"
+            return clip_until_stop(paragraphs[i + 1:]), para, "純標題識別（底部）"
 
-        para_no_space = re.sub(r'\s+', '', para_clean)
-        if re.match(r'^(\d+|[IVXLCDM]+|[一二三四五六七八九十壹貳參肆伍陸柒捌玖拾]+)?[、．. ]?參考文獻$', para_no_space):
-            return clip_until_stop(paragraphs[i + 1:]), para_clean, "章節標題識別"
+        # ✅ 容錯標題（e.g. "5. 參考文獻" 或 "IV. References"）
+        if re.match(r'^(\d+|[IVXLCDM]+|[一二三四五六七八九十壹貳參肆伍陸柒捌玖拾]+)?[、．. ]?\s*(參考文獻|references?)$', para_nospace):
+            return clip_until_stop(paragraphs[i + 1:]), para, "章節標題識別（底部）"
 
-    for i in range(len(paragraphs) - 1, -1, -1):
-        para = paragraphs[i].strip().lower()
-        if len(para) > 100:
-            continue
+        # ✅ 模糊關鍵字 + 後面段落像 APA 格式
         fuzzy_keywords = ["reference", "參考", "bibliography", "文獻"]
-        for keyword in fuzzy_keywords:
-            if keyword in para and len(para) < 50:
-                remaining = paragraphs[i + 1:]
-                if remaining and sum(1 for p in remaining[:5] if is_reference_format(p)) >= 2:
-                    return clip_until_stop(paragraphs[i + 1:]), para.strip(), "章節標題識別"
+        if any(k in para_lower for k in fuzzy_keywords) and len(para) < 50:
+            remaining = paragraphs[i + 1:]
+            ref_like_count = sum(1 for p in remaining[:5] if is_reference_format(p))
+            if ref_like_count >= 2:
+                return clip_until_stop(remaining), para.strip(), "模糊關鍵字識別（底部）"
 
     return [], None, "未找到參考文獻區段"
 
@@ -730,15 +714,18 @@ if uploaded_files and start_button:
             st.warning(f"⚠️ 檔案 {uploaded_file.name} 格式不支援，將略過。")
             continue
 
-        # 偵測參考文獻段落
-        matched_section, matched_keyword = extract_reference_section_from_bottom(paragraphs)
-        matched_method = "標準偵測"
+        # ========== 擷取參考文獻區段：先跑加強版，找不到再 fallback ==========
+        matched_section, matched_keyword, matched_method = extract_reference_section_improved(paragraphs)
 
         if not matched_section:
-            matched_section, matched_keyword, matched_method = extract_reference_section_improved(paragraphs)
-            if not matched_section:
-                st.error(f"❌ 無法識別檔案 {uploaded_file.name} 的參考文獻區段，已跳過該檔案。")
-                continue
+            matched_section, matched_keyword = extract_reference_section_from_bottom(paragraphs)
+            matched_method = "標準標題識別（底部）"
+
+        if not matched_section:
+            st.error(f"❌ 無法識別檔案 {uploaded_file.name} 的參考文獻區段，已跳過該檔案。")
+            continue
+
+
 
 
         with st.expander("擷取到的參考文獻段落（供人工檢查）"):
