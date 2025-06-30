@@ -75,6 +75,12 @@ def is_valid_year(year_str):
     except:
         return False
     
+# ========== 抓附錄 ========== 
+def is_appendix_heading(text):
+    """判斷段落是否為 APPENDIX（含數字、符號、中文等變化）開頭"""
+    text = text.strip().lower()
+    return bool(re.match(r'^(\d+[.、．]?\s*)?(附錄|appendix)', text, re.IGNORECASE))
+
 # ========== APA規則 ==========    
 def find_apa(ref_text):
     """
@@ -134,10 +140,11 @@ def find_apa_matches(ref_text):
 def find_apalike(ref_text):
     valid_years = []
     # 類型 1：標點 + 年份 + 標點（常見格式）
-    for match in re.finditer(r'[,，.。]\s*(\d{4})[.。，]', ref_text):
+    for match in re.finditer(r'[,，.。]\s*(\d{4}[a-c]?)[.。，]', ref_text):
         year_str = match.group(1)
         year_pos = match.start(1)
-        if not is_valid_year(year_str):
+        year_core = year_str[:4]
+        if not is_valid_year(year_core):
             continue
         # 前 5 字元不能有數字（排除 3.2020. 類型）
         pre_context = ref_text[max(0, year_pos - 5):year_pos]
@@ -159,10 +166,10 @@ def find_apalike(ref_text):
         valid_years.append((year_str, year_pos))
 
     # 類型 2：特殊格式「，2020，。」（中文常見）
-    for match in re.finditer(r'，\s*(\d{4})\s*，\s*。', ref_text):
+    for match in re.finditer(r'，\s*(\d{4}[a-c]?)\s*，\s*。', ref_text):
         year_str = match.group(1)
         year_pos = match.start(1)
-        if is_valid_year(year_str):
+        if is_valid_year(year_core):
             valid_years.append((year_str, year_pos))
 
     return valid_years
@@ -170,7 +177,7 @@ def find_apalike(ref_text):
 def match_apalike_title_section(ref_text):
 # 類型 1：常見格式（, 2020. Title.）
     match = re.search(
-        r'[,，.。]\s*(\d{4})(?:[.。，])+\s*(.*?)(?:(?<!\d)[,，.。](?!\d)|$)',
+        r'[,，.。]\s*(\d{4}[a-c]?)(?:[.。，])+\s*(.*?)(?:(?<!\d)[,，.。](?!\d)|$)',
         ref_text
     )
     if match:
@@ -178,7 +185,7 @@ def match_apalike_title_section(ref_text):
 
     # 類型 2：特殊中文格式（，2020，。Title）
     return re.search(
-        r'，\s*(\d{4})\s*，\s*。[ \t]*(.+?)(?:[，。]|$)',
+        r'，\s*(\d{4}[a-c]?)\s*，\s*。[ \t]*(.+?)(?:[，。]|$)',
         ref_text
     )
 
@@ -189,11 +196,12 @@ def find_apalike_matches(ref_text):
     matches = []
 
     # 類型 1：標點 + 年份 + 標點（常見格式）
-    pattern1 = r'[,，.。]\s*(\d{4})[.。，]'
+    pattern1 = r'[,，.。]\s*(\d{4}[a-c]?)[.。，]'
     for m in re.finditer(pattern1, ref_text):
         year_str = m.group(1)
         year_pos = m.start(1)
-        if not is_valid_year(year_str):
+        year_core = year_str[:4]
+        if not is_valid_year(year_core):
             continue
         pre_context = ref_text[max(0, year_pos - 5):year_pos]
         after_context = ref_text[m.end(1):m.end(1) + 5]
@@ -210,14 +218,14 @@ def find_apalike_matches(ref_text):
         matches.append(m)
 
     # 類型 2：特殊中文格式「，2020，。」
-    pattern2 = r'，\s*(\d{4})\s*，\s*。'
+    pattern2 = r'，\s*(\d{4}[a-c]?)\s*，\s*。'
     for m in re.finditer(pattern2, ref_text):
         year_str = m.group(1)
         year_pos = m.start(1)
         pre_context = ref_text[max(0, year_pos - 5):year_pos]
         if re.search(r'\d', pre_context):
             continue
-        if is_valid_year(year_str):
+        if is_valid_year(year_core):
             matches.append(m)
 
     return matches
@@ -379,9 +387,9 @@ def extract_paragraphs_from_pdf(file):
     return paragraphs
 
 # ========== 萃取參考文獻 ==========
-def extract_reference_section_from_bottom(paragraphs, start_keywords=None, stop_keywords=None):
+def extract_reference_section_from_bottom(paragraphs, start_keywords=None):
     """
-    從底部往上找出參考文獻區段起點，並向下擷取至遇到停止關鍵詞（如附錄）為止
+    從底部往上找出參考文獻區段起點，並向下擷取至遇到停止標題（如附錄）為止
     回傳格式：matched_section, matched_keyword
     """
     if start_keywords is None:
@@ -389,9 +397,6 @@ def extract_reference_section_from_bottom(paragraphs, start_keywords=None, stop_
             "參考文獻", "參考資料", "references", "reference",
             "bibliography", "works cited", "literature cited"
         ]
-
-    if stop_keywords is None:
-        stop_keywords = ["附錄", "附錄一"]
 
     for i in reversed(range(len(paragraphs))):
         para = paragraphs[i].strip()
@@ -402,24 +407,24 @@ def extract_reference_section_from_bottom(paragraphs, start_keywords=None, stop_
 
         normalized = para.lower()
         if normalized in start_keywords:
-            # 從 i+1 開始擷取，直到遇到 stop_keyword 為止
+            # 從 i+1 開始擷取，直到遇到附錄為止
             result = []
             for p in paragraphs[i + 1:]:
-                if any(kw in p.lower() for kw in stop_keywords):
+                if is_appendix_heading(p):
                     break
                 result.append(p)
             return result, para
 
     return [], None
 
+
+
 # ========== 萃取參考文獻 (加強版) ==========
 #也是需要把附錄截掉
-def clip_until_stop(paragraphs_after, stop_keywords=None):
-    if stop_keywords is None:
-        stop_keywords = ["附錄", "附錄一"]
+def clip_until_stop(paragraphs_after):
     result = []
     for para in paragraphs_after:
-        if any(kw in para.lower() for kw in stop_keywords):
+        if is_appendix_heading(para):
             break
         result.append(para)
     return result
@@ -429,90 +434,62 @@ def extract_reference_section_improved(paragraphs):
     改進的參考文獻區段識別，使用多重策略和容錯機制
     返回：(參考文獻段落列表, 識別到的標題, 識別方法)
     """
-    
+
     def is_reference_format(text):
-        """判斷段落是否符合參考文獻格式"""
         text = text.strip()
-        if len(text) < 10:  # 太短不太可能是參考文獻
+        if len(text) < 10:
             return False
-            
-        # APA格式：包含年份格式 (YYYY)
         if re.search(r'\(\d{4}[a-c]?\)', text):
             return True
-            
-        # IEEE格式：開頭是 [數字]
         if re.match(r'^\[\d+\]', text):
             return True
-            
-        # 通用格式：包含作者姓名模式
         if re.search(r'[A-Z][a-z]+,\s*[A-Z]\.', text):
             return True
-            
         return False
-    
+
     def is_chapter_title(text):
-        """判斷是否為章節標題"""
         text = text.strip()
-        
-        # 中文數字章節標題
         chinese_nums = r'[一二三四五六七八九十壹貳參肆伍陸柒捌玖拾]+'
         if re.match(f'^{chinese_nums}[、．.]', text):
             return True
-            
-        # 阿拉伯數字章節標題
         if re.match(r'^\d+[、．.]', text):
             return True
-            
-        # 英文章節標題
         if re.match(r'^[IVX]+[、．.]', text):
             return True
-            
         return False
-    
-    # 策略1：明確的參考文獻標題識別
+
     reference_keywords = [
-        "參考文獻", "references", "reference", 
+        "參考文獻", "references", "reference",
         "bibliography", "works cited", "literature cited"
     ]
-    
+
     for i, para in enumerate(paragraphs):
         para_clean = para.strip()
         para_lower = para_clean.lower()
-        
-        # 檢查章節標題格式的參考文獻
+
         if is_chapter_title(para_clean):
             for keyword in reference_keywords:
                 if keyword in para_lower:
                     return clip_until_stop(paragraphs[i + 1:]), para_clean, "章節標題識別"
-        
-        # 檢查純標題格式
+
         if para_lower in reference_keywords:
-            return paragraphs[i + 1:], para_clean, "純標題識別"
-        
-        # 補強：參考文獻前有數字或符號 
+            return clip_until_stop(paragraphs[i + 1:]), para_clean, "純標題識別"
+
         para_no_space = re.sub(r'\s+', '', para_clean)
         if re.match(r'^(\d+|[IVXLCDM]+|[一二三四五六七八九十壹貳參肆伍陸柒捌玖拾]+)?[、．. ]?參考文獻$', para_no_space):
             return clip_until_stop(paragraphs[i + 1:]), para_clean, "章節標題識別"
 
-    
-    # 策略2：關鍵字模糊匹配
-    for i in range(len(paragraphs) - 1, -1, -1):  # 從底部向上
+    for i in range(len(paragraphs) - 1, -1, -1):
         para = paragraphs[i].strip().lower()
-        
-        # 跳過明顯的正文段落
-        if len(para) > 100:  # 太長可能是正文
+        if len(para) > 100:
             continue
-            
-        # 模糊匹配參考文獻相關詞彙
         fuzzy_keywords = ["reference", "參考", "bibliography", "文獻"]
         for keyword in fuzzy_keywords:
             if keyword in para and len(para) < 50:
-                # 檢查後續段落是否有參考文獻格式
                 remaining = paragraphs[i + 1:]
                 if remaining and sum(1 for p in remaining[:5] if is_reference_format(p)) >= 2:
-                    return clip_until_stop(paragraphs[i + 1:]), para_clean, "章節標題識別"
-    
-    # 所有策略都失敗
+                    return clip_until_stop(paragraphs[i + 1:]), para.strip(), "章節標題識別"
+
     return [], None, "未找到參考文獻區段"
 
 
