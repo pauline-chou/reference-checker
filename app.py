@@ -481,10 +481,11 @@ def extract_reference_section_improved(paragraphs):
         # ✅ 容錯標題（含章節編號）
         # 支援中文大寫數字章節（如：陸、柒、參、捌）
         if re.match(
-            r'^((第?[一二三四五六七八九十百千萬壹貳參肆伍陸柒捌玖拾佰仟萬]+章[、.．]?)|([一二三四五六七八九十壹貳參肆伍陸柒捌玖拾]+)[、.．]?)?\s*(參考文獻|參考資料|references?|bibliography|works cited|literature cited|references and citations)\s*$',
+            r'^((第?[一二三四五六七八九十百千萬壹貳參肆伍陸柒捌玖拾佰仟萬]+章[、.．]?)|(\d+|[IVXLCDM]+|[一二三四五六七八九十壹貳參肆伍陸柒捌玖拾]+)?[、．. ]?)?\s*(參考文獻|參考資料|references?|bibliography|works cited|literature cited|references and citations)\s*$',
             para_lower
         ):
             return clip_until_stop(paragraphs[i + 1:]), para.strip(), "章節標題識別（底部）"
+
 
         # ✅ 模糊關鍵字 + 後面段落像 APA 格式
         fuzzy_keywords = ["reference", "參考", "bibliography", "文獻", " REFERENCES AND CITATIONS"]
