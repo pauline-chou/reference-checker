@@ -478,13 +478,14 @@ def extract_reference_section_improved(paragraphs):
         if para_lower in reference_keywords:
             return clip_until_stop(paragraphs[i + 1:]), para, "純標題識別（底部）"
 
-        # ✅ 容錯標題（e.g. "5. 參考文獻" 或 "IV. References"）
-        if re.match(r'^(\d+|[IVXLCDM]+|[一二三四五六七八九十壹貳參肆伍陸柒捌玖拾]+)?[、．. ]?\s*(參考文獻|references?)$', para_nospace):
+        # ✅ 容錯標題（含章節編號）
+        if re.match(r'^(\d+|[IVXLCDM]+|[一二三四五六七八九十壹貳參肆伍陸柒捌玖拾]+)?[、．. ]?\s*(參考文獻|references?|bibliography|works cited|literature cited|references and citations)\s*$', para_lower):
+
             return clip_until_stop(paragraphs[i + 1:]), para, "章節標題識別（底部）"
 
         # ✅ 模糊關鍵字 + 後面段落像 APA 格式
-        fuzzy_keywords = ["reference", "參考", "bibliography", "文獻", "references and citations"]
-        if any(k in para_lower for k in fuzzy_keywords):
+        fuzzy_keywords = ["reference", "參考", "bibliography", "文獻", " REFERENCES AND CITATIONS"]
+        if any(para_lower.strip() == k for k in fuzzy_keywords):  # ❗ 只接受整行剛好等於關鍵字
             if i + 1 < len(paragraphs):
                 next_paras = paragraphs[i+1:i+6]
                 if sum(1 for p in next_paras if is_reference_format(p)) >= 1:
