@@ -465,7 +465,7 @@ def extract_reference_section_improved(paragraphs):
     reference_keywords = [
         "參考文獻", "references", "reference",
         "bibliography", "works cited", "literature cited",
-        "references and citations"
+        "references and citations", "參考文獻格式"
     ]
 
     # ✅ 從底部往上掃描
@@ -479,7 +479,11 @@ def extract_reference_section_improved(paragraphs):
             return clip_until_stop(paragraphs[i + 1:]), para, "純標題識別（底部）"
 
         # ✅ 容錯標題（含章節編號）
-        if re.match(r'^(\d+|[IVXLCDM]+|[一二三四五六七八九十壹貳參肆伍陸柒捌玖拾]+)?[、．. ]?\s*(參考文獻|references?|bibliography|works cited|literature cited|references and citations)\s*$', para_lower):
+        if re.match(
+            r'^(第[一二三四五六七八九十百千萬壹貳參肆伍陸柒捌玖拾百千萬]+章[、.．]?\s*)?(參考文獻|references?|bibliography|works cited|literature cited|references and citations)\s*$',
+            para_lower
+        ):
+
 
             return clip_until_stop(paragraphs[i + 1:]), para, "章節標題識別（底部）"
 
