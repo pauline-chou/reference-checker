@@ -409,7 +409,8 @@ def extract_reference_section_from_bottom(paragraphs, start_keywords=None):
     if start_keywords is None:
         start_keywords = [
             "參考文獻", "參考資料", "references", "reference",
-            "bibliography", "works cited", "literature cited"
+            "bibliography", "works cited", "literature cited",
+            "references and citations"
         ]
 
     for i in reversed(range(len(paragraphs))):
@@ -463,7 +464,8 @@ def extract_reference_section_improved(paragraphs):
 
     reference_keywords = [
         "參考文獻", "references", "reference",
-        "bibliography", "works cited", "literature cited"
+        "bibliography", "works cited", "literature cited",
+        "references and citations"
     ]
 
     # ✅ 從底部往上掃描
@@ -481,12 +483,14 @@ def extract_reference_section_improved(paragraphs):
             return clip_until_stop(paragraphs[i + 1:]), para, "章節標題識別（底部）"
 
         # ✅ 模糊關鍵字 + 後面段落像 APA 格式
-        fuzzy_keywords = ["reference", "參考", "bibliography", "文獻"]
-        if any(k in para_lower for k in fuzzy_keywords) and len(para) < 50:
-            remaining = paragraphs[i + 1:]
-            ref_like_count = sum(1 for p in remaining[:5] if is_reference_format(p))
-            if ref_like_count >= 2:
-                return clip_until_stop(remaining), para.strip(), "模糊關鍵字識別（底部）"
+        fuzzy_keywords = ["reference", "參考", "bibliography", "文獻", "references and citations"]
+        if any(k in para_lower for k in fuzzy_keywords):
+            if i + 1 < len(paragraphs):
+                next_paras = paragraphs[i+1:i+6]
+                if sum(1 for p in next_paras if is_reference_format(p)) >= 1:
+                    return clip_until_stop(paragraphs[i + 1:]), para.strip(), "模糊標題+內容識別"
+
+
 
     return [], None, "未找到參考文獻區段"
 
