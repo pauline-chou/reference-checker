@@ -79,7 +79,7 @@ def is_valid_year(year_str):
 def is_appendix_heading(text):
     text = text.strip()
     return bool(re.match(
-        r'^((\d+|[IVXLCDM]+|[一二三四五六七八九十壹貳參肆伍陸柒捌玖拾]+)[、．. ]?\s*)?(附錄|APPENDIX)',
+        r'^([【〔（(]?\s*)?((\d+|[IVXLCDM]+|[一二三四五六七八九十壹貳參肆伍陸柒捌玖拾]+)[、．. ]?)?\s*(附錄|APPENDIX)(\s*[】〕）)]?)?$',
         text,
         re.IGNORECASE
     ))
