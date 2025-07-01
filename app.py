@@ -734,7 +734,20 @@ if uploaded_files and start_button:
             matched_method = "標準標題識別（底部）"
 
         if not matched_section:
-            st.error(f"❌ 無法識別檔案 {uploaded_file.name} 的參考文獻區段，已跳過該檔案。")
+            st.error(f"❌ 無法識別檔案 {uploaded_file.name} 的參考文獻區段，將標記於報告中。")
+            file_results = {
+                "filename": uploaded_file.name,
+                "title_pairs": [],
+                "crossref_doi_hits": {},
+                "scopus_hits": {},
+                "scholar_hits": {},
+                "scholar_similar": {},
+                "scholar_remedial": {},
+                "not_found": [],
+                "report_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "no_reference_section": True  # ✅ 新增旗標
+            }
+            all_results.append(file_results)
             continue
 
 
@@ -929,6 +942,14 @@ if st.session_state.query_results:
         export_data = []
         for result in st.session_state.query_results:
             filename = result["filename"]
+            if result.get("no_reference_section"):
+                export_data.append([
+                    result["filename"],
+                    "",  # 原始參考文獻留空
+                    "查無結果：未解析出參考文獻段落",
+                    ""
+                ])
+                continue
             for ref, title in result["title_pairs"]:
                 if ref in result["crossref_doi_hits"]:
                     export_data.append([filename, ref, "Crossref 有 DOI 資訊", result["crossref_doi_hits"][ref]])
@@ -957,11 +978,14 @@ if st.session_state.query_results:
 
         csv_buffer = StringIO()
         csv_buffer.write(header.getvalue())
-        if not export_data:
-            st.warning("⚠️ 沒有可匯出的查核結果。")
-        else:
-            df_export = pd.DataFrame(export_data, columns=["檔案名稱", "原始參考文獻", "查核結果", "連結"])
-            df_export.to_csv(csv_buffer, index=False)
+        export_data.append([
+            result["filename"],
+            "",
+            "查無結果：無命中也無段落",
+            ""
+        ])
+        df_export = pd.DataFrame(export_data, columns=["檔案名稱", "原始參考文獻", "查核結果", "連結"])
+        df_export.to_csv(csv_buffer, index=False)
 
         # 統計所有檔案的總數
         total_files = len(st.session_state.query_results)
