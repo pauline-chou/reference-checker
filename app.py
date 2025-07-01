@@ -942,10 +942,12 @@ if st.session_state.query_results:
         export_data = []
         for result in st.session_state.query_results:
             filename = result["filename"]
+            has_any = False  # 是否有任何命中資料
+
             if result.get("no_reference_section"):
                 export_data.append([
-                    result["filename"],
-                    "",  # 原始參考文獻留空
+                    filename,
+                    "",
                     "查無結果：未解析出參考文獻段落",
                     ""
                 ])
@@ -953,17 +955,40 @@ if st.session_state.query_results:
             for ref, title in result["title_pairs"]:
                 if ref in result["crossref_doi_hits"]:
                     export_data.append([filename, ref, "Crossref 有 DOI 資訊", result["crossref_doi_hits"][ref]])
+                    has_any = True  
                 elif ref in result["scopus_hits"]:
                     export_data.append([filename, ref, "標題命中（Scopus）", result["scopus_hits"][ref]])
+                    has_any = True  
                 elif ref in result["scholar_hits"]:
                     export_data.append([filename, ref, "標題命中（Google Scholar）", result["scholar_hits"][ref]])
+                    has_any = True  
                 elif ref in result["scholar_similar"]:
                     export_data.append([filename, ref, "Google Scholar 類似標題", result["scholar_similar"][ref]])
+                    has_any = True  
                 elif ref in result.get("scholar_remedial", {}):
                     export_data.append([filename, ref, "Google Scholar 補救命中", result["scholar_remedial"][ref]])
+                    has_any = True  
                 elif ref in result["not_found"]:
                     scholar_url = f"https://scholar.google.com/scholar?q={urllib.parse.quote(ref)}"
                     export_data.append([filename, ref, "查無結果", scholar_url])
+                    has_any = True  # 即使查無結果也算有一筆資料要輸出
+
+            # fallback 1：完全沒有擷取參考文獻
+            if not result["title_pairs"]:
+                export_data.append([
+                    filename,
+                    "",
+                    "查無結果：無命中也無段落",
+                    ""
+                ])
+            # fallback 2：有參考文獻但全部都沒命中
+            elif not has_any:
+                export_data.append([
+                    filename,
+                    "",
+                    "查無結果：所有參考文獻均未命中",
+                    ""
+                ])
         total_refs = sum(len(r["title_pairs"]) for r in st.session_state.query_results)
         matched_exact = sum(len(r["crossref_doi_hits"]) + len(r["scopus_hits"]) + len(r["scholar_hits"]) for r in st.session_state.query_results)
         matched_similar = sum(len(r["scholar_similar"]) for r in st.session_state.query_results)
@@ -978,14 +1003,19 @@ if st.session_state.query_results:
 
         csv_buffer = StringIO()
         csv_buffer.write(header.getvalue())
-        export_data.append([
-            result["filename"],
-            "",
-            "查無結果：無命中也無段落",
-            ""
-        ])
-        df_export = pd.DataFrame(export_data, columns=["檔案名稱", "原始參考文獻", "查核結果", "連結"])
+        if not export_data:
+            csv_buffer.write(header.getvalue())
+            df_export = pd.DataFrame([[
+                "（無檔案）",
+                "",
+                "⚠️ 沒有可匯出的查核結果（全部檔案皆無資料）",
+                ""
+            ]], columns=["檔案名稱", "原始參考文獻", "查核結果", "連結"])
+        else:
+            df_export = pd.DataFrame(export_data, columns=["檔案名稱", "原始參考文獻", "查核結果", "連結"])
+
         df_export.to_csv(csv_buffer, index=False)
+
 
         # 統計所有檔案的總數
         total_files = len(st.session_state.query_results)
