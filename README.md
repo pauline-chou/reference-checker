@@ -42,12 +42,14 @@ scopus_api_key = "在這裡貼您的 Scopus Key"
 serpapi_key    = "在這裡貼您的 SerpAPI Key"
 ```
 
-streamlit 地端部署：
-streamlit run app.py
-預設會在 http://localhost:8501 開啟
-可自行更改埠號
 
-streamlit 網頁：
+---
+streamlit 地端部署：
+1. streamlit run app.py
+2. 預設會在 http://localhost:8501 開啟
+3. 可自行更改埠號
+
+Streamlit Cloud：
 1. 將整個程式上傳到 GitHub，並設定為公開
 2. 前往 https://streamlit.io/cloud 並登入
 3. 點選 New App → 選擇你的 GitHub 專案 → 指定主程式 app.py
