@@ -54,7 +54,7 @@ Streamlit Cloud：
 2. 前往 https://streamlit.io/cloud 並登入
 3. 點選 New App → 選擇你的 GitHub 專案 → 指定主程式 app.py
 4. 部署完成後，可以自行取名一個公開網址（例如 https://your-app.streamlit.app）
-
+5. 請到 App → Settings → Secrets 貼上金鑰：
 ```toml
 scopus_api_key = "在這裡貼您的 Scopus Key"
 serpapi_key = "在這裡貼您的 SerpAPI Key"
