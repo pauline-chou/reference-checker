@@ -40,8 +40,7 @@ Reference Checker 是一個簡單實用的工具，可自動從 Word 檔（`.doc
 ```toml
 scopus_api_key = "在這裡貼您的 Scopus Key"
 serpapi_key    = "在這裡貼您的 SerpAPI Key"
-
----
+```
 
 streamlit 地端部署：
 streamlit run app.py
@@ -57,3 +56,4 @@ streamlit 網頁：
 ```toml
 scopus_api_key = "在這裡貼您的 Scopus Key"
 serpapi_key = "在這裡貼您的 SerpAPI Key"
+```
